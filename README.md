@@ -126,6 +126,7 @@ Windows 下 `--no-elevate` 关闭自动 UAC 提权。
 - `domains.polluted`：后缀匹配（`github.com` 自动覆盖全部子域），支持 `*.x.com` 与 `*`；默认清单对齐 [GitHub520](https://github.com/521xueweihan/GitHub520) 域名集（GitHub 生态 + Fastly/S3 专用子域），另含 `dns.google` / `cloudflare-dns.com`（保证境外 DoH 自身获得干净 IP）
 - `upstreams.system`：留空自动发现（接管前的原 DNS 会从状态文件优先恢复使用，绝不回环查询自己）
 - `upstreams.fallback`：公共回退链（默认 223.5.5.5 / 119.29.29.29 / 1.1.1.1）——system 上游全部失败时兜底，修复「虚拟网卡网关无 DNS 服务导致非污染域名全部超时」一类问题
+- `override`：hosts 格式 IP 覆盖表（可选订阅 [GitHub520](https://github.com/521xueweihan/GitHub520) 等优选 IP 清单）——命中域名直接应答表中 IP，等价于动态 hosts 注入；`urls` 远程清单 + `files` 本地文件 + `refresh_interval` 周期刷新
 - `ecs`：`strip` 默认剥离客户端 ECS；`spoof` 可注入指定网段
 - `log`：`verbose_queries = true`（配合 `level = "debug"`）打印每次查询；`stats_interval` 控制周期统计心跳（默认 1 分钟，`"0s"` 关闭），运行日志同时写入 `<配置目录>/truedns.log`，可用 `truedns logs` 查看
 
