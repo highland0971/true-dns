@@ -179,7 +179,7 @@ func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	cfg := e.cfg
 	e.mu.RUnlock()
 	if om != nil {
-		if ips := om.lookup(q.Name); len(ips) > 0 && (q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA) {
+		if ips := om.lookup(q.Name); overrideHasFamily(ips, q.Qtype) {
 			resp := synthesizeOverride(r, q, ips, cfg.Override.TTL)
 			e.overrideQueries.Add(1)
 			resp.Id = r.Id
@@ -274,6 +274,25 @@ func routeName(viaDoH bool) string {
 		return "doh"
 	}
 	return "system"
+}
+
+// overrideHasFamily reports whether the override IPs contain an address of
+// the queried family; otherwise the query falls through to normal routing
+// (a hosts entry with only A records must not suppress AAAA resolution).
+func overrideHasFamily(ips []net.IP, qtype uint16) bool {
+	for _, ip := range ips {
+		switch qtype {
+		case dns.TypeA:
+			if ip.To4() != nil {
+				return true
+			}
+		case dns.TypeAAAA:
+			if ip.To4() == nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // synthesizeOverride builds an A/AAAA answer directly from override-table IPs.

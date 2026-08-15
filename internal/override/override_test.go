@@ -1,7 +1,9 @@
 package override
 
 import (
+	"errors"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,6 +117,72 @@ func TestMultiSourceMerge(t *testing.T) {
 	}
 }
 
+// errorReader yields prefix bytes then a read error, simulating a truncated
+// subscription download.
+type errorReader struct {
+	rest int
+	err  error
+}
+
+func (r *errorReader) Read(p []byte) (int, error) {
+	if r.rest <= 0 {
+		return 0, r.err
+	}
+	n := len(p)
+	if n > r.rest {
+		n = r.rest
+	}
+	for i := 0; i < n; i++ {
+		p[i] = 'x'
+	}
+	r.rest -= n
+	return n, nil
+}
+
+func TestPartialLoadKeepsPrevious(t *testing.T) {
+	tbl := New()
+	if _, err := tbl.loadSource("sub", strings.NewReader("1.1.1.1 example.org\n2.2.2.2 two.example.org\n")); err != nil {
+		t.Fatal(err)
+	}
+	// Truncated refresh (read error after some bytes) must NOT replace the
+	// previous complete entries.
+	_, err := tbl.loadSource("sub", &errorReader{rest: 16, err: errTruncated})
+	if err == nil {
+		t.Fatal("expected read error")
+	}
+	if ips := tbl.Lookup("example.org"); len(ips) != 1 || ips[0].String() != "1.1.1.1" {
+		t.Fatalf("previous entry lost after partial load: %v", ips)
+	}
+	if ips := tbl.Lookup("two.example.org"); len(ips) != 1 {
+		t.Fatalf("previous second entry lost: %v", ips)
+	}
+	if tbl.Meta().LastError == "" {
+		t.Fatal("LastError not recorded for partial load")
+	}
+}
+
+func TestLoadURLsNon200(t *testing.T) {
+	srv := newHostsServer(t, "unused")
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	})
+	tbl := New()
+	// Seed previous entries for the same URL.
+	if _, err := tbl.loadSource(srv.URL, strings.NewReader("1.1.1.1 example.org\n")); err != nil {
+		t.Fatal(err)
+	}
+	err := tbl.LoadURLs(t.Context(), []string{srv.URL}, "", srv.client())
+	if err == nil {
+		t.Fatal("expected http 500 error")
+	}
+	if ips := tbl.Lookup("example.org"); len(ips) != 1 || ips[0].String() != "1.1.1.1" {
+		t.Fatalf("previous entries lost on non-200: %v", ips)
+	}
+	if tbl.Meta().LastError == "" {
+		t.Fatal("LastError not recorded")
+	}
+}
+
 func TestLoadFiles(t *testing.T) {
 	dir := t.TempDir()
 	f1 := filepath.Join(dir, "a.hosts")
@@ -160,5 +228,7 @@ func TestLoadURLsError(t *testing.T) {
 		t.Fatal("last error not recorded")
 	}
 }
+
+var errTruncated = errors.New("truncated")
 
 var _ = net.ParseIP // keep net import used across test variants

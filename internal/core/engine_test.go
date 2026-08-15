@@ -470,6 +470,36 @@ func TestOverrideRouting(t *testing.T) {
 	}
 }
 
+func TestOverrideFamilyFallthrough(t *testing.T) {
+	// An A-only override entry must not suppress AAAA resolution: the query
+	// falls through to normal routing.
+	dir := t.TempDir()
+	f := filepath.Join(dir, "v4.hosts")
+	if err := os.WriteFile(f, []byte("10.9.8.7 v4only.github.com\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doh := &fakeDoH{answer: "140.82.112.4", ttl: 60}
+	srv := httptest.NewServer(doh.handler())
+	defer srv.Close()
+
+	cfg := testConfig(config.ModeSplit, srv.URL, "127.0.0.1:9", "github.com")
+	cfg.Override.Files = []string{f}
+	cfg.Override.TTL = 30 * time.Second
+	e, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Shutdown()
+
+	resp := query(t, e, "v4only.github.com", dns.TypeAAAA, false)
+	if n := doh.queries.Load(); n != 1 {
+		t.Fatalf("DoH queries = %d, want 1 (AAAA must fall through to upstream)", n)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("answers = %d, want upstream answer", len(resp.Answer))
+	}
+}
+
 func TestNormalizeAddr(t *testing.T) {
 	cases := map[string]string{
 		"127.0.0.1":      "127.0.0.1:53",

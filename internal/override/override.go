@@ -75,14 +75,21 @@ func (t *Table) loadSource(src string, r io.Reader) (int, error) {
 		}
 	}
 	t.mu.Lock()
-	t.sources[src] = parsed
-	t.refreshMetaLocked(sc.Err())
+	// Commit only on a complete read: a partial parse must not replace the
+	// previous (complete) entries for this source.
+	if sc.Err() == nil {
+		t.sources[src] = parsed
+	}
+	t.refreshMetaLocked()
 	t.mu.Unlock()
+	if sc.Err() != nil {
+		t.recordError(fmt.Errorf("parse source %s: %w", src, sc.Err()))
+	}
 	return len(parsed), sc.Err()
 }
 
 // refreshMetaLocked rebuilds the derived metadata; caller holds the lock.
-func (t *Table) refreshMetaLocked(lastErr error) {
+func (t *Table) refreshMetaLocked() {
 	srcs := make([]string, 0, len(t.sources))
 	total := 0
 	for s, m := range t.sources {
@@ -93,11 +100,6 @@ func (t *Table) refreshMetaLocked(lastErr error) {
 	t.meta.Sources = srcs
 	t.meta.Entries = total
 	t.meta.UpdatedAt = time.Now()
-	if lastErr != nil {
-		t.meta.LastError = lastErr.Error()
-	} else {
-		t.meta.LastError = ""
-	}
 }
 
 func containsIP(ips []net.IP, ip net.IP) bool {
@@ -110,14 +112,19 @@ func containsIP(ips []net.IP, ip net.IP) bool {
 }
 
 // Lookup returns the override IPs for name (nil when not covered), merged
-// across sources and deduplicated.
+// across sources (in source-name order for determinism) and deduplicated.
 func (t *Table) Lookup(name string) []net.IP {
 	name = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(name), "."))
 	t.mu.RLock()
 	defer t.mu.RUnlock()
+	srcs := make([]string, 0, len(t.sources))
+	for s := range t.sources {
+		srcs = append(srcs, s)
+	}
+	sort.Strings(srcs)
 	var out []net.IP
-	for _, m := range t.sources {
-		for _, ip := range m[name] {
+	for _, s := range srcs {
+		for _, ip := range t.sources[s][name] {
 			if !containsIP(out, ip) {
 				out = append(out, ip)
 			}
@@ -141,7 +148,6 @@ func (t *Table) LoadFiles(paths []string) error {
 		f, err := openFile(p)
 		if err != nil {
 			lastErr = fmt.Errorf("override file %s: %w", p, err)
-			t.recordError(lastErr)
 			continue
 		}
 		_, err = t.loadSource(p, f)
@@ -149,6 +155,11 @@ func (t *Table) LoadFiles(paths []string) error {
 		if err != nil {
 			lastErr = fmt.Errorf("override file %s: %w", p, err)
 		}
+	}
+	if lastErr == nil {
+		t.clearError()
+	} else {
+		t.recordError(lastErr)
 	}
 	return lastErr
 }
@@ -182,13 +193,11 @@ func (t *Table) LoadURLs(ctx context.Context, urls []string, proxyURL string, cl
 		resp, err := c.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("override url %s: %w", u, err)
-			t.recordError(lastErr)
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
 			lastErr = fmt.Errorf("override url %s: http %d", u, resp.StatusCode)
-			t.recordError(lastErr)
 			continue
 		}
 		_, perr := t.loadSource(u, io.LimitReader(resp.Body, 4<<20))
@@ -197,6 +206,11 @@ func (t *Table) LoadURLs(ctx context.Context, urls []string, proxyURL string, cl
 			lastErr = fmt.Errorf("override url %s: %w", u, perr)
 		}
 	}
+	if lastErr == nil {
+		t.clearError()
+	} else {
+		t.recordError(lastErr)
+	}
 	return lastErr
 }
 
@@ -204,6 +218,12 @@ func (t *Table) recordError(err error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.meta.LastError = err.Error()
+}
+
+func (t *Table) clearError() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.meta.LastError = ""
 }
 
 // openFile is a variable so tests can substitute a failing opener.
