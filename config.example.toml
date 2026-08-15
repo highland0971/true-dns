@@ -127,8 +127,10 @@ enabled = false
 port = 443
 timeout = "700ms"
 mode = "drop"           # drop | prefer
-max_ips = 8             # 每地址族最多探测的 IP 数
+max_ips = 8             # 每地址族最多探测的 IP 数 (上限 32)
 cache_ttl = "1m"        # 探测结果缓存 ("0s" 关闭)
+# 延迟预算: 探测并发度 4, 最坏新增首包延迟 ≈ ceil(2*max_ips/4)*timeout
+# (默认 8 → ≈ 2.8s); 被墙 IP 会吃满 timeout, 按需调小 max_ips/timeout。
 
 # ---------------------------------------------------------------------------
 # EDNS Client Subnet (ECS) 处理。

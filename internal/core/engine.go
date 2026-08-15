@@ -208,7 +208,8 @@ func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 	e.mu.RLock()
 	cfg = e.cfg
-	viaDoH := cfg.Mode == config.ModeFull || e.matcher.Match(q.Name)
+	matched := e.matcher.Match(q.Name)
+	viaDoH := cfg.Mode == config.ModeFull || matched
 	dohUp := e.doh
 	sysUp := e.system
 	fbUp := e.systemFB
@@ -263,7 +264,7 @@ func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
-	if pr != nil && viaDoH && resp.Rcode == dns.RcodeSuccess {
+	if pr != nil && matched && resp.Rcode == dns.RcodeSuccess {
 		resp.Answer = filterAnswerIPs(resp.Answer, pr, cfg.Probe)
 	}
 	resp.Id = r.Id

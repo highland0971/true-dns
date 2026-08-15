@@ -1,6 +1,10 @@
 // Package probe checks TCP reachability of candidate IPs (GitHub520-style
 // port-443 probing) so the engine can drop or reorder addresses of
 // poisoned-domain answers.
+//
+// Latency budget: Filter dials candidates concurrently with a small worker
+// cap, so the worst-case added latency is
+// ceil(2 * max_ips / probeConcurrency) * timeout.
 package probe
 
 import (
@@ -9,6 +13,9 @@ import (
 	"sync"
 	"time"
 )
+
+// probeConcurrency caps concurrent dials inside one Filter call.
+const probeConcurrency = 4
 
 // Mode selects how probe results reshape an answer set.
 type Mode string
@@ -32,28 +39,36 @@ type cacheEntry struct {
 	expires time.Time
 }
 
+type inflightEntry struct {
+	done chan struct{}
+	res  Result
+}
+
 // Prober is safe for concurrent use.
 type Prober struct {
-	mu      sync.Mutex
-	cache   map[string]cacheEntry
-	port    int
-	timeout time.Duration
-	ttl     time.Duration
-	checks  uint64 // cache-miss dials performed
+	mu       sync.Mutex
+	cache    map[string]cacheEntry
+	inflight map[string]*inflightEntry // per-IP dial dedup (singleflight)
+	port     int
+	timeout  time.Duration
+	ttl      time.Duration
+	checks   uint64 // actual dials performed
 }
 
 // New creates a Prober dialing port with timeout; results are cached for
 // cacheTTL (0 disables caching).
 func New(port int, timeout, cacheTTL time.Duration) *Prober {
 	return &Prober{
-		cache:   make(map[string]cacheEntry),
-		port:    port,
-		timeout: timeout,
-		ttl:     cacheTTL,
+		cache:    make(map[string]cacheEntry),
+		inflight: make(map[string]*inflightEntry),
+		port:     port,
+		timeout:  timeout,
+		ttl:      cacheTTL,
 	}
 }
 
-// Check probes ip once (cached within the TTL window) and returns the result.
+// Check probes ip once (cached within the TTL window; concurrent callers of
+// the same cache miss share a single dial).
 func (p *Prober) Check(ip net.IP) Result {
 	key := ip.String()
 	now := time.Now()
@@ -62,6 +77,13 @@ func (p *Prober) Check(ip net.IP) Result {
 		p.mu.Unlock()
 		return e.res
 	}
+	if in, ok := p.inflight[key]; ok {
+		p.mu.Unlock()
+		<-in.done
+		return in.res
+	}
+	in := &inflightEntry{done: make(chan struct{})}
+	p.inflight[key] = in
 	p.mu.Unlock()
 
 	start := time.Now()
@@ -78,11 +100,14 @@ func (p *Prober) Check(ip net.IP) Result {
 	if p.ttl > 0 {
 		p.cache[key] = cacheEntry{res: res, expires: now.Add(p.ttl)}
 	}
+	in.res = res
+	close(in.done)
+	delete(p.inflight, key)
 	p.mu.Unlock()
 	return res
 }
 
-// Stats reports how many cache-miss probes have been performed.
+// Stats reports how many actual dials have been performed.
 func (p *Prober) Stats() uint64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -92,6 +117,7 @@ func (p *Prober) Stats() uint64 {
 // Filter reshapes ips per mode: drop removes unreachable addresses (falling
 // back to the original set when none survive); prefer sorts reachable first
 // by latency. At most max IPs are probed (the rest keep their positions).
+// Dials run concurrently, capped at probeConcurrency.
 func (p *Prober) Filter(ips []net.IP, mode Mode, max int) []net.IP {
 	if len(ips) <= 1 {
 		return ips
@@ -104,10 +130,21 @@ func (p *Prober) Filter(ips []net.IP, mode Mode, max int) []net.IP {
 		ip  net.IP
 		res Result
 	}
-	ps := make([]probed, 0, limit)
+	ps := make([]probed, limit)
+	sem := make(chan struct{}, probeConcurrency)
+	var wg sync.WaitGroup
 	for i := 0; i < limit; i++ {
-		ps = append(ps, probed{ip: ips[i], res: p.Check(ips[i])})
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			ps[i].ip = ips[i]
+			ps[i].res = p.Check(ips[i])
+		}(i)
 	}
+	wg.Wait()
+
 	reachable := func(pp []probed) []net.IP {
 		out := make([]net.IP, 0, len(pp))
 		for _, x := range pp {

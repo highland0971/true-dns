@@ -128,7 +128,7 @@ Windows 下 `--no-elevate` 关闭自动 UAC 提权。
 - `upstreams.fallback`：公共回退链（默认 223.5.5.5 / 119.29.29.29 / 1.1.1.1）——system 上游全部失败时兜底，修复「虚拟网卡网关无 DNS 服务导致非污染域名全部超时」一类问题
 - `override`：hosts 格式 IP 覆盖表（可选订阅 [GitHub520](https://github.com/521xueweihan/GitHub520) 等优选 IP 清单）——命中域名直接应答表中 IP，等价于动态 hosts 注入；`urls` 远程清单 + `files` 本地文件 + `refresh_interval` 周期刷新
 - `ecs`：`strip` 默认剥离客户端 ECS；`spoof` 可注入指定网段
-- `probe`：污染域名应答的 IP 可达性探测（TCP 443 测速，借鉴 GitHub520）——`drop` 剔除不可达 IP / `prefer` 可达优先排序，默认关闭
+- `probe`：污染域名应答的 IP 可达性探测（TCP 443 测速，借鉴 GitHub520）——`drop` 剔除不可达 IP（每地址族前 `max_ips` 个，全部不可达时保留原答）/ `prefer` 可达优先排序，默认关闭；探测并发 4，最坏新增首包延迟 ≈ `ceil(2*max_ips/4)*timeout`
 - `log`：`verbose_queries = true`（配合 `level = "debug"`）打印每次查询；`stats_interval` 控制周期统计心跳（默认 1 分钟，`"0s"` 关闭），运行日志同时写入 `<配置目录>/truedns.log`，可用 `truedns logs` 查看
 
 ## 控制 API（托盘 GUI 预留接口）
@@ -154,6 +154,7 @@ POST /api/v1/shutdown      → 优雅停止代理 (run 进程退出并恢复系�
 cmd/truedns            CLI 入口 (命令分发, 信号处理, 提权)
 internal/core          DNS 引擎: 路由/EDNS/缓存/上游策略 —— 纯 Go, 平台无关
   ├─ internal/resolver   DoH 客户端 (POST+GET 回退, 校验) / 明文上游 (UDP+TCP 回退)
+  ├─ internal/probe      IP 可达性探测 (TCP connect, drop/prefer)
   ├─ internal/cache      TTL LRU 缓存 (含负缓存)
   ├─ internal/matcher    域名后缀匹配
   └─ internal/config     TOML 配置加载/校验

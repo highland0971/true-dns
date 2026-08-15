@@ -548,6 +548,44 @@ func TestProbeDrop(t *testing.T) {
 	}
 }
 
+func TestProbeScopePollutedOnly(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	doh := &fakeDoH{answers: []string{"127.0.0.1", "127.0.0.2"}, ttl: 60}
+	srv := httptest.NewServer(doh.handler())
+	defer srv.Close()
+
+	cfg := testConfig(config.ModeFull, srv.URL, "127.0.0.1:9", "github.com")
+	cfg.Probe.Enabled = true
+	cfg.Probe.Port = port
+	cfg.Probe.Mode = "drop"
+	cfg.Probe.Timeout = 500 * time.Millisecond
+	e, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Shutdown()
+
+	// Polluted domain: probed (2 checks).
+	_ = query(t, e, "github.com", dns.TypeA, false)
+	if got := e.Status().ProbeChecks; got != 2 {
+		t.Fatalf("probe checks after polluted query = %d, want 2", got)
+	}
+	// Non-polluted domain in full mode: NOT probed (answer unfiltered).
+	resp := query(t, e, "example.com", dns.TypeA, false)
+	if len(resp.Answer) != 2 {
+		t.Fatalf("non-polluted answers = %d, want 2 (unfiltered)", len(resp.Answer))
+	}
+	if got := e.Status().ProbeChecks; got != 2 {
+		t.Fatalf("probe checks after non-polluted query = %d, want 2 (no probing)", got)
+	}
+}
+
 func TestNormalizeAddr(t *testing.T) {
 	cases := map[string]string{
 		"127.0.0.1":      "127.0.0.1:53",

@@ -315,8 +315,8 @@ func (c *Config) Validate() error {
 	if c.Probe.Timeout <= 0 || c.Probe.Timeout > 10*time.Second {
 		return fmt.Errorf("probe.timeout must be within (0s, 10s]")
 	}
-	if c.Probe.MaxIPs <= 0 {
-		return fmt.Errorf("probe.max_ips must be > 0")
+	if c.Probe.MaxIPs <= 0 || c.Probe.MaxIPs > 32 {
+		return fmt.Errorf("probe.max_ips must be within [1, 32]")
 	}
 	if c.Probe.CacheTTL < 0 {
 		return fmt.Errorf("probe.cache_ttl must be >= 0 (0 disables caching)")

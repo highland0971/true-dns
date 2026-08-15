@@ -2,6 +2,7 @@ package probe
 
 import (
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -79,6 +80,24 @@ func TestFilterPrefer(t *testing.T) {
 	}
 	if !got[0].Equal(reachable) || !got[1].Equal(unreachable) {
 		t.Fatalf("prefer order = %v", got)
+	}
+}
+
+func TestConcurrentDedup(t *testing.T) {
+	port := startTCPListener(t)
+	p := New(port, 500*time.Millisecond, time.Minute)
+	ip := net.ParseIP("127.0.0.2") // unreachable
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p.Check(ip)
+		}()
+	}
+	wg.Wait()
+	if got := p.Stats(); got != 1 {
+		t.Fatalf("dials = %d, want 1 (concurrent misses must share one dial)", got)
 	}
 }
 
