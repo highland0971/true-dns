@@ -3,6 +3,8 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"testing"
 	"time"
@@ -121,5 +123,66 @@ func TestReloadDisabled(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotImplemented {
 		t.Fatalf("reload = %d, want 501", resp.StatusCode)
+	}
+}
+
+func TestShutdown(t *testing.T) {
+	eng := testEngine(t)
+	s := New("127.0.0.1:0", "", eng, nil)
+	called := make(chan struct{}, 1)
+	s.SetShutdown(func() { called <- struct{}{} })
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = s.Shutdown(ctx)
+	})
+	resp := do(t, http.MethodPost, "http://"+s.Addr()+"/api/v1/shutdown", "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("shutdown = %d", resp.StatusCode)
+	}
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdown callback was not invoked")
+	}
+}
+
+func TestPortFallback(t *testing.T) {
+	// StateDir may be unwritable (sandbox HOME); use a temp HOME so the
+	// port file lands somewhere real.
+	t.Setenv("HOME", t.TempDir())
+	// Occupy a port and confirm the API falls back to another candidate and
+	// persists it to the api-port file.
+	blocker, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close()
+	busy := blocker.Addr().(*net.TCPAddr).Port
+
+	eng := testEngine(t)
+	s := New(fmt.Sprintf("127.0.0.1:%d", busy), "", eng, nil)
+	if err := s.Start(); err != nil {
+		t.Fatalf("Start should fall back to another port, got: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = s.Shutdown(ctx)
+	})
+	if s.BoundPort() == busy {
+		t.Fatalf("bound the busy port %d", busy)
+	}
+	if _, err := ReadPortFile(); err != nil {
+		t.Fatalf("port file not written: %v", err)
+	}
+	resp := do(t, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/healthz", s.BoundPort()), "")
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("healthz on fallback port = %d", resp.StatusCode)
 	}
 }

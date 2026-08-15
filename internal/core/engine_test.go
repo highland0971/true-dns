@@ -400,6 +400,28 @@ func TestReload(t *testing.T) {
 	}
 }
 
+func TestSystemFallbackChain(t *testing.T) {
+	// System upstream is dead (closed port); the configured public fallback
+	// must answer.
+	fbAddr := startUDPDNS(t, "192.0.2.53")
+	cfg := testConfig(config.ModeSplit, "http://127.0.0.1:9/dns-query", "127.0.0.1:1", "github.com")
+	cfg.Upstreams.Fallback = []string{fbAddr}
+	e, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := firstA(t, query(t, e, "example.com", dns.TypeA, false)); got != "192.0.2.53" {
+		t.Fatalf("fallback answer = %s", got)
+	}
+	st := e.Status()
+	if st.FallbackQueries != 1 {
+		t.Fatalf("fallback queries = %d, want 1", st.FallbackQueries)
+	}
+	if len(st.SystemFallbackUpstreams) != 1 || st.SystemFallbackUpstreams[0] != fbAddr {
+		t.Fatalf("fallback upstreams = %v", st.SystemFallbackUpstreams)
+	}
+}
+
 func TestNormalizeAddr(t *testing.T) {
 	cases := map[string]string{
 		"127.0.0.1":      "127.0.0.1:53",

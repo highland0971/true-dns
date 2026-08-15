@@ -38,7 +38,10 @@ const (
 
 // DefaultPollutedDomains is the built-in list of domains whose DNS answers are
 // known to be poisoned in mainland China (GitHub ecosystem). Every entry also
-// covers all of its subdomains.
+// covers all of its subdomains. dns.google / cloudflare-dns.com are included
+// so the foreign DoH endpoints themselves get clean answers: the engine's DoH
+// client resolves their hostnames through the system resolver, which after a
+// takeover is this proxy itself.
 var DefaultPollutedDomains = []string{
 	"github.com",
 	"github.io",
@@ -51,6 +54,8 @@ var DefaultPollutedDomains = []string{
 	"githubapp.com",
 	"github.net",
 	"ghcr.io",
+	"dns.google",
+	"cloudflare-dns.com",
 }
 
 // Config is the root configuration structure, decoded from TOML.
@@ -78,6 +83,9 @@ type UpstreamConfig struct {
 	// System overrides the discovered system DNS servers for non-polluted
 	// domains. Empty means "discover from the OS".
 	System []string `toml:"system"`
+	// Fallback are public plaintext resolvers tried when every system
+	// upstream fails (dead VM gateways etc.). Empty disables the chain.
+	Fallback []string `toml:"fallback"`
 	// Strategy picks between race and failover for multiple DoH upstreams.
 	Strategy Strategy `toml:"strategy"`
 	// Timeout is the per-attempt upstream query timeout.
@@ -141,6 +149,7 @@ func Default() *Config {
 			},
 			Strategy:      StrategyRace,
 			Timeout:       3 * time.Second,
+			Fallback:      []string{"223.5.5.5", "119.29.29.29", "1.1.1.1"},
 			FallbackToDoH: false,
 		},
 		Cache: CacheConfig{
