@@ -128,6 +128,23 @@ func newState(payload any) (*TakeoverState, error) {
 	}, nil
 }
 
+// adapterActive reports whether a Windows network interface carries real IP
+// configuration and should take part in the DNS takeover: it is DHCP-managed,
+// has a static IP address, or has DNS servers configured. Lives in the shared
+// file so it can be unit-tested on any OS.
+func adapterActive(dhcp string, ips []string, nameServer, dhcpNameServer string) bool {
+	if strings.TrimSpace(dhcp) == "1" {
+		return true
+	}
+	for _, ip := range ips {
+		s := strings.TrimSpace(ip)
+		if s != "" && s != "0.0.0.0" && s != "::" {
+			return true
+		}
+	}
+	return strings.TrimSpace(nameServer) != "" || strings.TrimSpace(dhcpNameServer) != ""
+}
+
 // DefaultFallbackServers are used when no usable system DNS server can be
 // discovered (post-takeover every live value is the loopback proxy, which
 // must never be used as an upstream).

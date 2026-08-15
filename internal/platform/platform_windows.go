@@ -95,9 +95,11 @@ func (windowsPlatform) SetSystemDNS() (*TakeoverState, error) {
 		return nil, fmt.Errorf("enumerate Tcpip interfaces: %w", err)
 	}
 	var touched []winAdapter
+	var skipped []string
 	for _, name := range names {
 		ik, err := registry.OpenKey(k, name, registry.QUERY_VALUE|registry.SET_VALUE)
 		if err != nil {
+			skipped = append(skipped, name+"(unreadable)")
 			continue // adapter key we cannot open: skip
 		}
 		ad := winAdapter{Key: name}
@@ -107,11 +109,12 @@ func (windowsPlatform) SetSystemDNS() (*TakeoverState, error) {
 		if dh, _, err := ik.GetStringValue("DhcpNameServer"); err == nil {
 			ad.DhcpNameServer = dh
 		}
-		// Only touch adapters that actually carry IP configuration.
-		ip, _, _ := ik.GetStringValue("IPAddress")
+		// IPAddress is REG_MULTI_SZ, not REG_SZ.
+		ips, _, _ := ik.GetStringsValue("IPAddress")
 		dhcp, _, _ := ik.GetStringValue("EnableDHCP")
-		if strings.TrimSpace(ip) == "" && dhcp != "1" {
+		if !adapterActive(dhcp, ips, ad.NameServer, ad.DhcpNameServer) {
 			ik.Close()
+			skipped = append(skipped, name+"(no ip config)")
 			continue
 		}
 		if err := ik.SetStringValue("NameServer", loopback); err != nil {
@@ -122,7 +125,14 @@ func (windowsPlatform) SetSystemDNS() (*TakeoverState, error) {
 		touched = append(touched, ad)
 	}
 	if len(touched) == 0 {
-		return nil, fmt.Errorf("no active network adapters found to take over")
+		detail := strings.Join(skipped, "; ")
+		if len(detail) > 512 {
+			detail = detail[:512] + "..."
+		}
+		if detail == "" {
+			detail = "no interface keys present"
+		}
+		return nil, fmt.Errorf("no active network adapters found to take over (%s)", detail)
 	}
 	return newState(touched)
 }
