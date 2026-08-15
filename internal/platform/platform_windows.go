@@ -30,10 +30,10 @@ func IsElevated() bool {
 	return windows.GetCurrentProcessToken().IsElevated()
 }
 
-// Elevate relaunches the current executable with the same arguments through
-// UAC. It returns (true, nil) when the relaunch was initiated — the caller
-// should exit — and (false, nil) when the process is already elevated.
-func Elevate() (bool, error) {
+// ElevateArgs relaunches the current executable with the given arguments
+// through UAC. It returns (true, nil) when the relaunch was initiated — the
+// caller should exit — and (false, nil) when the process is already elevated.
+func ElevateArgs(args []string) (bool, error) {
 	if IsElevated() {
 		return false, nil
 	}
@@ -43,7 +43,7 @@ func Elevate() (bool, error) {
 	}
 	verb, _ := windows.UTF16PtrFromString("runas")
 	file, _ := windows.UTF16PtrFromString(exe)
-	params, _ := windows.UTF16PtrFromString(quoteArgs(os.Args[1:]))
+	params, _ := windows.UTF16PtrFromString(quoteArgs(args))
 	// ShellExecute returns an error when the return code is <= 32, which
 	// covers both failure and the user cancelling the UAC prompt.
 	if err := windows.ShellExecute(0, verb, file, params, nil, windows.SW_SHOWNORMAL); err != nil {
@@ -51,6 +51,10 @@ func Elevate() (bool, error) {
 	}
 	return true, nil
 }
+
+// Elevate relaunches the current executable with the current process
+// arguments through UAC.
+func Elevate() (bool, error) { return ElevateArgs(os.Args[1:]) }
 
 func quoteArgs(args []string) string {
 	var b strings.Builder
