@@ -15,6 +15,10 @@ repository. It is binding for every automated change.
 5. 提交信息遵循 Conventional Commits，并在信息中关联 Issue 编号。
 6. 改动公共配置/接口（config 字段、控制 API、CLI 命令）时，必须同步更新
    `config.example.toml` 与 `README.md`。
+7. **合入门禁**：PR 合入前必须完成独立 Review —— 派发与作者**不共享上下文**的子代理
+   （subagent）按 [docs/REVIEW.md](docs/REVIEW.md) 清单审查，审查方必须自行运行质量门
+   （test/vet/gofmt/双平台构建）；结论以 GitHub Review 评论（`APPROVE` / `REQUEST_CHANGES`）
+   归档于 PR。**Review 未通过或 CI 未绿一律不得合入；作者不得给自己的 PR 打 APPROVE。**
 
 ## 推荐 (SHOULD)
 
