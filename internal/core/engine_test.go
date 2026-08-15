@@ -39,6 +39,7 @@ type fakeDoH struct {
 	queries  atomic.Int64
 	check    func(*dns.Msg) // optional request inspection
 	answer   string
+	answers  []string // when set, multiple A records
 	ttl      uint32
 	rcode    int
 	failHTTP bool
@@ -64,10 +65,19 @@ func (f *fakeDoH) handler() http.HandlerFunc {
 		m := new(dns.Msg)
 		m.SetRcode(req, f.rcode)
 		if f.rcode == dns.RcodeSuccess {
-			m.Answer = []dns.RR{&dns.A{
-				Hdr: dns.RR_Header{Name: req.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: f.ttl},
-				A:   net.ParseIP(f.answer).To4(),
-			}}
+			if len(f.answers) > 0 {
+				for _, a := range f.answers {
+					m.Answer = append(m.Answer, &dns.A{
+						Hdr: dns.RR_Header{Name: req.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: f.ttl},
+						A:   net.ParseIP(a).To4(),
+					})
+				}
+			} else {
+				m.Answer = []dns.RR{&dns.A{
+					Hdr: dns.RR_Header{Name: req.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: f.ttl},
+					A:   net.ParseIP(f.answer).To4(),
+				}}
+			}
 		} else if f.rcode == dns.RcodeNameError {
 			m.Ns = []dns.RR{&dns.SOA{
 				Hdr: dns.RR_Header{Name: req.Question[0].Name, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60},
@@ -497,6 +507,82 @@ func TestOverrideFamilyFallthrough(t *testing.T) {
 	}
 	if len(resp.Answer) != 1 {
 		t.Fatalf("answers = %d, want upstream answer", len(resp.Answer))
+	}
+}
+
+func TestProbeDrop(t *testing.T) {
+	// Bind 127.0.0.1:port so 127.0.0.1 is reachable and 127.0.0.2 refused.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	doh := &fakeDoH{answers: []string{"127.0.0.1", "127.0.0.2"}, ttl: 60}
+	srv := httptest.NewServer(doh.handler())
+	defer srv.Close()
+
+	cfg := testConfig(config.ModeFull, srv.URL, "127.0.0.1:9", "github.com")
+	cfg.Probe.Enabled = true
+	cfg.Probe.Port = port
+	cfg.Probe.Mode = "drop"
+	cfg.Probe.Timeout = 500 * time.Millisecond
+	cfg.Probe.MaxIPs = 8
+	e, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Shutdown()
+
+	resp := query(t, e, "github.com", dns.TypeA, false)
+	if len(resp.Answer) != 1 {
+		t.Fatalf("answers after drop = %d, want 1", len(resp.Answer))
+	}
+	if a := resp.Answer[0].(*dns.A).A.String(); a != "127.0.0.1" {
+		t.Fatalf("kept answer = %s", a)
+	}
+	st := e.Status()
+	if !st.ProbeEnabled || st.ProbeChecks != 2 {
+		t.Fatalf("probe status = enabled %v checks %d, want true/2", st.ProbeEnabled, st.ProbeChecks)
+	}
+}
+
+func TestProbeScopePollutedOnly(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	doh := &fakeDoH{answers: []string{"127.0.0.1", "127.0.0.2"}, ttl: 60}
+	srv := httptest.NewServer(doh.handler())
+	defer srv.Close()
+
+	cfg := testConfig(config.ModeFull, srv.URL, "127.0.0.1:9", "github.com")
+	cfg.Probe.Enabled = true
+	cfg.Probe.Port = port
+	cfg.Probe.Mode = "drop"
+	cfg.Probe.Timeout = 500 * time.Millisecond
+	e, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Shutdown()
+
+	// Polluted domain: probed (2 checks).
+	_ = query(t, e, "github.com", dns.TypeA, false)
+	if got := e.Status().ProbeChecks; got != 2 {
+		t.Fatalf("probe checks after polluted query = %d, want 2", got)
+	}
+	// Non-polluted domain in full mode: NOT probed (answer unfiltered).
+	resp := query(t, e, "example.com", dns.TypeA, false)
+	if len(resp.Answer) != 2 {
+		t.Fatalf("non-polluted answers = %d, want 2 (unfiltered)", len(resp.Answer))
+	}
+	if got := e.Status().ProbeChecks; got != 2 {
+		t.Fatalf("probe checks after non-polluted query = %d, want 2 (no probing)", got)
 	}
 }
 

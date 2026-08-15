@@ -19,6 +19,7 @@ import (
 	"truedns/internal/config"
 	"truedns/internal/matcher"
 	"truedns/internal/platform"
+	"truedns/internal/probe"
 	"truedns/internal/resolver"
 	"truedns/internal/version"
 )
@@ -42,6 +43,7 @@ type Engine struct {
 	system    *resolver.Plain
 	systemFB  *resolver.Plain // public fallback chain (upstreams.fallback)
 	overrideM *overrideManager
+	prober    *probe.Prober // nil when probe.enabled = false
 	sem       chan struct{}
 	rot       atomic.Uint64 // failover rotation
 
@@ -72,6 +74,7 @@ func New(cfg *config.Config) (*Engine, error) {
 		system:    sys,
 		systemFB:  fb,
 		overrideM: newOverrideManager(cfg),
+		prober:    newProber(cfg),
 		sem:       make(chan struct{}, maxInflight),
 		startedAt: time.Now(),
 	}, nil
@@ -133,7 +136,7 @@ func (e *Engine) Reload(cfg *config.Config) error {
 	om := newOverrideManager(cfg)
 	e.mu.Lock()
 	old := e.overrideM
-	e.cfg, e.matcher, e.doh, e.system, e.systemFB, e.overrideM = cfg, m, doh, sys, fb, om
+	e.cfg, e.matcher, e.doh, e.system, e.systemFB, e.overrideM, e.prober = cfg, m, doh, sys, fb, om, newProber(cfg)
 	e.mu.Unlock()
 	old.shutdown()
 	e.cache.Flush()
@@ -205,10 +208,12 @@ func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 
 	e.mu.RLock()
 	cfg = e.cfg
-	viaDoH := cfg.Mode == config.ModeFull || e.matcher.Match(q.Name)
+	matched := e.matcher.Match(q.Name)
+	viaDoH := cfg.Mode == config.ModeFull || matched
 	dohUp := e.doh
 	sysUp := e.system
 	fbUp := e.systemFB
+	pr := e.prober
 	e.mu.RUnlock()
 
 	out := prepareOutgoing(r, cfg, viaDoH)
@@ -259,6 +264,9 @@ func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
+	if pr != nil && matched && resp.Rcode == dns.RcodeSuccess {
+		resp.Answer = filterAnswerIPs(resp.Answer, pr, cfg.Probe)
+	}
 	resp.Id = r.Id
 	resp.Question = []dns.Question{q}
 	finalizeEDNS(r, resp)
@@ -485,6 +493,8 @@ type Status struct {
 	SystemQueries           uint64          `json:"system_queries"`
 	FallbackQueries         uint64          `json:"fallback_queries"`
 	OverrideQueries         uint64          `json:"override_queries"`
+	ProbeEnabled            bool            `json:"probe_enabled"`
+	ProbeChecks             uint64          `json:"probe_checks"`
 	OverrideEntries         int             `json:"override_entries"`
 	OverrideUpdatedAt       time.Time       `json:"override_updated_at,omitempty"`
 	OverrideLastError       string          `json:"override_last_error,omitempty"`
@@ -516,6 +526,7 @@ func (e *Engine) Status() Status {
 	domains := append([]string(nil), cfg.Domains.Polluted...)
 	listen := append([]string(nil), cfg.Listen...)
 	om := e.overrideM
+	pr := e.prober
 	e.mu.RUnlock()
 
 	size, hits, misses := e.cache.Stats()
@@ -538,6 +549,10 @@ func (e *Engine) Status() Status {
 		OverrideQueries:         e.overrideQueries.Load(),
 		Failures:                e.failures.Load(),
 		UptimeSeconds:           int64(time.Since(e.startedAt).Seconds()),
+	}
+	if pr != nil {
+		s.ProbeEnabled = true
+		s.ProbeChecks = pr.Stats()
 	}
 	if om != nil {
 		meta := om.meta()
