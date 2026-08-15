@@ -26,7 +26,7 @@ no-hostname-line
 
 func TestParseHosts(t *testing.T) {
 	tbl := New()
-	added, err := tbl.ParseHosts(strings.NewReader(sampleHosts))
+	added, err := tbl.loadSource("test", strings.NewReader(sampleHosts))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestParseHosts(t *testing.T) {
 
 func TestLookupCaseAndDot(t *testing.T) {
 	tbl := New()
-	if _, err := tbl.ParseHosts(strings.NewReader("1.2.3.4 Example.COM.\n")); err != nil {
+	if _, err := tbl.loadSource("test", strings.NewReader("1.2.3.4 Example.COM.\n")); err != nil {
 		t.Fatal(err)
 	}
 	ips := tbl.Lookup("example.com.")
@@ -66,11 +66,52 @@ func TestLookupCaseAndDot(t *testing.T) {
 
 func TestDuplicateIPNotRepeated(t *testing.T) {
 	tbl := New()
-	if _, err := tbl.ParseHosts(strings.NewReader("1.2.3.4 example.org\n1.2.3.4 example.org\n")); err != nil {
+	if _, err := tbl.loadSource("test", strings.NewReader("1.2.3.4 example.org\n1.2.3.4 example.org\n")); err != nil {
 		t.Fatal(err)
 	}
 	if ips := tbl.Lookup("example.org"); len(ips) != 1 {
 		t.Fatalf("dup ips = %v", ips)
+	}
+}
+
+func TestRefreshReplacesSource(t *testing.T) {
+	tbl := New()
+	if _, err := tbl.loadSource("sub", strings.NewReader("1.1.1.1 example.org\n")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tbl.loadSource("sub", strings.NewReader("2.2.2.2 example.org\n")); err != nil {
+		t.Fatal(err)
+	}
+	ips := tbl.Lookup("example.org")
+	if len(ips) != 1 || ips[0].String() != "2.2.2.2" {
+		t.Fatalf("stale IP retained after refresh: %v", ips)
+	}
+	meta := tbl.Meta()
+	if meta.Entries != 1 || len(meta.Sources) != 1 {
+		t.Fatalf("meta after refresh = %+v", meta)
+	}
+}
+
+func TestMultiSourceMerge(t *testing.T) {
+	tbl := New()
+	_, _ = tbl.loadSource("a", strings.NewReader("1.1.1.1 example.org\n"))
+	_, _ = tbl.loadSource("b", strings.NewReader("2.2.2.2 example.org\n"))
+	ips := tbl.Lookup("example.org")
+	if len(ips) != 2 {
+		t.Fatalf("merged ips = %v", ips)
+	}
+	// Replacing source a must only drop its own entry.
+	_, _ = tbl.loadSource("a", strings.NewReader("3.3.3.3 example.org\n"))
+	ips = tbl.Lookup("example.org")
+	if len(ips) != 2 {
+		t.Fatalf("ips after partial refresh = %v", ips)
+	}
+	found := map[string]bool{}
+	for _, ip := range ips {
+		found[ip.String()] = true
+	}
+	if !found["3.3.3.3"] || !found["2.2.2.2"] {
+		t.Fatalf("unexpected merge result: %v", ips)
 	}
 }
 

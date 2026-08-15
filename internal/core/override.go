@@ -16,13 +16,15 @@ import (
 // refresh loop. It is swapped atomically on config reload like the other
 // derived components.
 type overrideManager struct {
-	table *override.Table
-	stop  chan struct{}
-	wg    sync.WaitGroup
+	table  *override.Table
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 func newOverrideManager(cfg *config.Config) *overrideManager {
-	m := &overrideManager{table: override.New(), stop: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	m := &overrideManager{table: override.New(), ctx: ctx, cancel: cancel}
 	if err := m.table.LoadFiles(cfg.Override.Files); err != nil {
 		slog.Warn("override files partially failed to load", "err", err)
 	}
@@ -37,9 +39,12 @@ func (m *overrideManager) loop(cfg *config.Config) {
 	defer m.wg.Done()
 	client := &http.Client{Timeout: 15 * time.Second}
 	fetch := func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		ctx, cancel := context.WithTimeout(m.ctx, 15*time.Second)
 		defer cancel()
 		if err := m.table.LoadURLs(ctx, cfg.Override.URLs, cfg.Upstreams.ProxyURL, client); err != nil {
+			if ctx.Err() != nil {
+				return // cancelled during shutdown; not a real failure
+			}
 			slog.Warn("override URL fetch failed", "err", err)
 			return
 		}
@@ -53,7 +58,7 @@ func (m *overrideManager) loop(cfg *config.Config) {
 	defer t.Stop()
 	for {
 		select {
-		case <-m.stop:
+		case <-m.ctx.Done():
 			return
 		case <-t.C:
 			fetch()
@@ -61,9 +66,9 @@ func (m *overrideManager) loop(cfg *config.Config) {
 	}
 }
 
-// shutdown stops the refresh loop and waits for it to finish.
+// shutdown cancels in-flight fetches and waits for the loop to finish.
 func (m *overrideManager) shutdown() {
-	close(m.stop)
+	m.cancel()
 	m.wg.Wait()
 }
 
