@@ -22,6 +22,11 @@ Closes #N
 - [ ] 控制 API / CLI 命令变更
 - [ ] 默认 DoH 上游变更（国内可达性已确认）
 
+## Review 记录
+
+独立 reviewer（子代理 / 人类）按 [docs/REVIEW.md](docs/REVIEW.md) 审查后，
+在本 PR 评论中归档结论（`APPROVE` / `REQUEST_CHANGES`）。合入前提：**APPROVE + CI 全绿**。
+
 ## 备注
 
 - 其他 reviewer 需要知道的信息

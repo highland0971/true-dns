@@ -10,6 +10,7 @@
 3. **一 PR 一 Issue** —— 每个 PR 只解决一个 Issue，PR 描述以 `Closes #N` 关联。
 4. **质量门槛** —— CI 必须全绿（`go test` / `go vet` / 格式检查 / Windows+Linux 交叉构建），破坏性改动必须在 PR 中说明影响面。
 5. **提交信息规范** —— 遵循 Conventional Commits：`feat` / `fix` / `chore` / `docs` / `test` / `refactor` + 简短说明。
+6. **独立 Review 门禁** —— 每个 PR 必须经过独立 Review（与作者**不共享上下文**的子代理，或人类 reviewer），按 [docs/REVIEW.md](docs/REVIEW.md) 清单审查；**作者不得审查自己的 PR**；结论以 GitHub Review 评论归档，**APPROVE 且 CI 全绿方可合入**。
 
 ## 标准工作流
 
@@ -20,8 +21,11 @@
    - 维护任务：`chore/#<issue>-<简述>`
 3. 开发，本地保证 `make test vet` 通过（见下方环境说明）。
 4. 推送分支，打开 PR（使用 PR 模板，填写 `Closes #N`）。
-5. CI 全绿（并按分支保护配置完成 review）后，**Squash 合入** `main`，删除源分支。
-6. 每个 Milestone 完成时打版本 tag（`vX.Y.Z`），在 Releases 发布各平台二进制与变更说明。
+5. **独立 Review**：由子代理 / 人类 reviewer 按 [docs/REVIEW.md](docs/REVIEW.md) 审查，
+   结论以 GitHub Review（`APPROVE` / `REQUEST_CHANGES`）归档于 PR；
+   收到 `REQUEST_CHANGES` 则修复后重新请求审查。
+6. **Review 通过且 CI 全绿**后，Squash 合入 `main`，删除源分支。
+7. 每个 Milestone 完成时打版本 tag（`vX.Y.Z`），在 Releases 发布各平台二进制与变更说明。
 
 ## Milestone 规划
 
@@ -44,4 +48,4 @@
 
 ## 分支保护（严格 PR 模式）
 
-`main` 分支已启用保护：必须通过 PR 合入、必须通过 CI 状态检查。单人开发时允许自行合入（不强制他人 review），但流程本身（Issue → 分支 → PR）不可跳过。
+`main` 分支已启用保护：必须通过 PR 合入、必须通过 CI 状态检查。单人开发时允许自行合入（不强制他人 review），但流程本身（Issue → 分支 → PR → **独立 Review**）不可跳过——Review 环节由本文档与 [docs/REVIEW.md](docs/REVIEW.md) 强制，不以 GitHub 的 APPROVE 计数为唯一依据。
