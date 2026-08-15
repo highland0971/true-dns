@@ -231,6 +231,53 @@ func takeoverExtra() map[string]any {
 	return m
 }
 
+// apiBaseCandidates returns candidate base URLs for the control API, in
+// discovery order: the persisted api-port file first (the actual bound port
+// after fallback), then the configured listen address.
+func apiBaseCandidates(cfg *config.Config) []string {
+	var out []string
+	if p, err := api.ReadPortFile(); err == nil && p > 0 {
+		out = append(out, fmt.Sprintf("http://127.0.0.1:%d", p))
+	}
+	if cfg.API.Enabled {
+		if _, _, err := net.SplitHostPort(cfg.API.Listen); err == nil {
+			out = append(out, "http://"+cfg.API.Listen)
+		}
+	}
+	seen := map[string]bool{}
+	uniq := make([]string, 0, len(out))
+	for _, u := range out {
+		if !seen[u] {
+			seen[u] = true
+			uniq = append(uniq, u)
+		}
+	}
+	return uniq
+}
+
+// firstReachableAPI probes the candidate endpoints and returns the first base
+// URL whose /healthz answers.
+func firstReachableAPI(cfg *config.Config, client *http.Client) (string, error) {
+	var lastErr error
+	for _, base := range apiBaseCandidates(cfg) {
+		req, _ := http.NewRequest(http.MethodGet, base+"/healthz", nil)
+		if cfg.API.Token != "" {
+			req.Header.Set("X-TrueDNS-Token", cfg.API.Token)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return base, nil
+		}
+		lastErr = fmt.Errorf("%s returned %s", base, resp.Status)
+	}
+	return "", lastErr
+}
+
 // loadConfig loads the configuration for path. When path is the platform
 // default location and the file is missing, it bootstraps the file with the
 // built-in defaults (first-run experience); an explicitly given --config path
@@ -286,6 +333,9 @@ func serveLoop(eng *core.Engine, apiSrv *api.Server) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if apiSrv != nil {
+		// Tray GUI / API can stop the proxy gracefully; the run process then
+		// restores the system DNS via its deferred restore.
+		apiSrv.SetShutdown(stop)
 		defer func() {
 			shCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
@@ -299,6 +349,7 @@ func serveLoop(eng *core.Engine, apiSrv *api.Server) error {
 		"listen", st.Listen,
 		"doh_upstreams", st.DoHUpstreams,
 		"system_upstreams", st.SystemUpstreams,
+		"system_fallback_upstreams", st.SystemFallbackUpstreams,
 		"polluted_domains", len(st.PollutedDomains),
 	)
 	// Periodic stats heartbeat so the window/log shows activity without
@@ -515,16 +566,16 @@ func cmdStatus(fs *flag.FlagSet, args []string) error {
 		fmt.Println("代理状态: 控制 API 已禁用, 无法探测 (api.enabled = false)")
 		return nil
 	}
-	addr := cfg.API.Listen
-	if _, _, err := net.SplitHostPort(addr); err != nil {
-		addr = "127.0.0.1:5378"
+	client := &http.Client{Timeout: 2 * time.Second}
+	url, lastErr := firstReachableAPI(cfg, client)
+	if url == "" {
+		fmt.Printf("代理状态: 未运行或不可达 (%v)\n", lastErr)
+		return nil
 	}
-	url := "http://" + addr + "/api/v1/status"
-	req, _ := http.NewRequest(http.MethodGet, url, nil)
+	req, _ := http.NewRequest(http.MethodGet, url+"/api/v1/status", nil)
 	if cfg.API.Token != "" {
 		req.Header.Set("X-TrueDNS-Token", cfg.API.Token)
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Printf("代理状态: 未运行或不可达 (%v)\n", err)
@@ -581,12 +632,16 @@ func cmdFlush(fs *flag.FlagSet, args []string) error {
 	if !cfg.API.Enabled {
 		return errors.New("control API is disabled (api.enabled = false)")
 	}
-	url := "http://" + cfg.API.Listen + "/api/v1/flush"
-	req, _ := http.NewRequest(http.MethodPost, url, nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+	url, lastErr := firstReachableAPI(cfg, client)
+	if url == "" {
+		return fmt.Errorf("flush failed (proxy not running?): %w", lastErr)
+	}
+	req, _ := http.NewRequest(http.MethodPost, url+"/api/v1/flush", nil)
 	if cfg.API.Token != "" {
 		req.Header.Set("X-TrueDNS-Token", cfg.API.Token)
 	}
-	resp, err := (&http.Client{Timeout: 2 * time.Second}).Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("flush failed (proxy not running?): %w", err)
 	}

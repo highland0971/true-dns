@@ -34,19 +34,21 @@ type failure struct {
 
 // Engine routes and answers DNS queries. It is safe for concurrent use.
 type Engine struct {
-	mu      sync.RWMutex
-	cfg     *config.Config
-	matcher *matcher.Matcher
-	cache   *cache.Cache
-	doh     []*resolver.DoH
-	system  *resolver.Plain
-	sem     chan struct{}
-	rot     atomic.Uint64 // failover rotation
+	mu       sync.RWMutex
+	cfg      *config.Config
+	matcher  *matcher.Matcher
+	cache    *cache.Cache
+	doh      []*resolver.DoH
+	system   *resolver.Plain
+	systemFB *resolver.Plain // public fallback chain (upstreams.fallback)
+	sem      chan struct{}
+	rot      atomic.Uint64 // failover rotation
 
 	startedAt   time.Time
 	queries     atomic.Uint64
 	dohQueries  atomic.Uint64
 	sysQueries  atomic.Uint64
+	fbQueries   atomic.Uint64
 	failures    atomic.Uint64
 	lastFailure atomic.Pointer[failure]
 }
@@ -56,7 +58,7 @@ func New(cfg *config.Config) (*Engine, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	m, doh, sys, err := buildFrom(cfg)
+	m, doh, sys, fb, err := buildFrom(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -66,23 +68,25 @@ func New(cfg *config.Config) (*Engine, error) {
 		cache:     cache.New(cfg.Cache.MaxEntries, cfg.Cache.MaxTTL),
 		doh:       doh,
 		system:    sys,
+		systemFB:  fb,
 		sem:       make(chan struct{}, maxInflight),
 		startedAt: time.Now(),
 	}, nil
 }
 
 // buildFrom constructs the derived components for a configuration without
-// mutating anything, so reloads are atomic.
-func buildFrom(cfg *config.Config) (*matcher.Matcher, []*resolver.DoH, *resolver.Plain, error) {
+// mutating anything, so reloads are atomic. The fallback chain excludes any
+// address already present in the system upstreams.
+func buildFrom(cfg *config.Config) (*matcher.Matcher, []*resolver.DoH, *resolver.Plain, *resolver.Plain, error) {
 	m, err := matcher.New(cfg.Domains.Polluted)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("domains: %w", err)
+		return nil, nil, nil, nil, fmt.Errorf("domains: %w", err)
 	}
 	doh := make([]*resolver.DoH, 0, len(cfg.Upstreams.DoH))
 	for i, u := range cfg.Upstreams.DoH {
 		d, err := resolver.NewDoH(fmt.Sprintf("doh-%d", i+1), u, cfg.Upstreams.Timeout, cfg.Upstreams.ProxyURL)
 		if err != nil {
-			return nil, nil, nil, fmt.Errorf("upstream %q: %w", u, err)
+			return nil, nil, nil, nil, fmt.Errorf("upstream %q: %w", u, err)
 		}
 		doh = append(doh, d)
 	}
@@ -90,7 +94,27 @@ func buildFrom(cfg *config.Config) (*matcher.Matcher, []*resolver.DoH, *resolver
 	if len(sysAddrs) == 0 {
 		sysAddrs = platform.Current().DiscoverSystemDNS()
 	}
-	return m, doh, resolver.NewPlain(sysAddrs, cfg.Upstreams.Timeout), nil
+	sysUp := resolver.NewPlain(sysAddrs, cfg.Upstreams.Timeout)
+	fbAddrs := make([]string, 0, len(cfg.Upstreams.Fallback))
+	seen := map[string]bool{}
+	for _, a := range sysAddrs {
+		if na, err := resolver.WithPort(a); err == nil {
+			seen[na] = true
+		}
+	}
+	for _, a := range cfg.Upstreams.Fallback {
+		na, err := resolver.WithPort(a)
+		if err != nil || seen[na] {
+			continue
+		}
+		seen[na] = true
+		fbAddrs = append(fbAddrs, na)
+	}
+	var fbUp *resolver.Plain
+	if len(fbAddrs) > 0 {
+		fbUp = resolver.NewPlain(fbAddrs, cfg.Upstreams.Timeout)
+	}
+	return m, doh, sysUp, fbUp, nil
 }
 
 // Reload swaps in a new configuration and flushes cached entries so the new
@@ -99,13 +123,13 @@ func (e *Engine) Reload(cfg *config.Config) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	m, doh, sys, err := buildFrom(cfg)
+	m, doh, sys, fb, err := buildFrom(cfg)
 	if err != nil {
 		return err
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.cfg, e.matcher, e.doh, e.system = cfg, m, doh, sys
+	e.cfg, e.matcher, e.doh, e.system, e.systemFB = cfg, m, doh, sys, fb
 	e.cache.Flush()
 	return nil
 }
@@ -145,6 +169,7 @@ func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	viaDoH := cfg.Mode == config.ModeFull || e.matcher.Match(q.Name)
 	dohUp := e.doh
 	sysUp := e.system
+	fbUp := e.systemFB
 	e.mu.RUnlock()
 
 	out := prepareOutgoing(r, cfg, viaDoH)
@@ -152,19 +177,37 @@ func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	defer cancel()
 
 	var (
-		resp *dns.Msg
-		err  error
+		resp  *dns.Msg
+		err   error
+		route string
 	)
 	if viaDoH {
 		e.dohQueries.Add(1)
 		resp, err = e.exchangeDoH(ctx, out, cfg, dohUp)
+		route = routeName(viaDoH)
 	} else {
+		route = "system"
 		e.sysQueries.Add(1)
 		resp, err = sysUp.Exchange(ctx, out)
+		if err != nil && fbUp != nil {
+			// Discovered system upstreams can be dead (e.g. VM host-only
+			// gateways); give the configured public fallback chain its own
+			// timeout budget. The route stays "system-fallback" even when
+			// the fallback also fails, preserving the failure path in logs.
+			route = "system-fallback"
+			slog.Debug("system upstream failed, trying public fallback", "qname", q.Name, "err", err)
+			fctx, fcancel := context.WithTimeout(context.Background(), cfg.Upstreams.Timeout)
+			e.fbQueries.Add(1)
+			resp, err = fbUp.Exchange(fctx, out)
+			fcancel()
+		}
 		if err != nil && cfg.Upstreams.FallbackToDoH {
-			slog.Warn("system upstream failed, falling back to DoH", "qname", q.Name, "err", err)
+			slog.Warn("system upstreams failed, falling back to DoH", "qname", q.Name, "err", err)
 			e.dohQueries.Add(1)
 			resp, err = e.exchangeDoH(ctx, out, cfg, dohUp)
+			if err == nil {
+				route = "doh-fallback"
+			}
 		}
 	}
 	if err != nil {
@@ -172,7 +215,7 @@ func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		e.lastFailure.Store(&failure{Err: err.Error(), At: time.Now()})
 		slog.Warn("resolve failed",
 			"qname", q.Name, "qtype", dns.TypeToString[q.Qtype],
-			"route", routeName(viaDoH), "err", err)
+			"route", route, "err", err)
 		e.replyRcode(w, r, dns.RcodeServerFailure)
 		return
 	}
@@ -183,7 +226,7 @@ func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	if ttl := cache.TTLFromMsg(resp, cfg.Cache.MaxTTL); ttl > 0 {
 		e.cache.Put(key, resp, ttl)
 	}
-	e.logQuery(r, resp, routeName(viaDoH), time.Since(start))
+	e.logQuery(r, resp, route, time.Since(start))
 	_ = w.WriteMsg(resp)
 }
 
@@ -338,22 +381,24 @@ type FailureInfo struct {
 
 // Status describes the engine for the control API and CLI status command.
 type Status struct {
-	Version         string          `json:"version"`
-	Mode            config.Mode     `json:"mode"`
-	Listen          []string        `json:"listen"`
-	Strategy        config.Strategy `json:"strategy"`
-	DoHUpstreams    []string        `json:"doh_upstreams"`
-	SystemUpstreams []string        `json:"system_upstreams"`
-	PollutedDomains []string        `json:"polluted_domains"`
-	CacheSize       int             `json:"cache_size"`
-	CacheHits       uint64          `json:"cache_hits"`
-	CacheMisses     uint64          `json:"cache_misses"`
-	Queries         uint64          `json:"queries"`
-	DoHQueries      uint64          `json:"doh_queries"`
-	SystemQueries   uint64          `json:"system_queries"`
-	Failures        uint64          `json:"failures"`
-	LastFailure     *FailureInfo    `json:"last_failure,omitempty"`
-	UptimeSeconds   int64           `json:"uptime_seconds"`
+	Version                 string          `json:"version"`
+	Mode                    config.Mode     `json:"mode"`
+	Listen                  []string        `json:"listen"`
+	Strategy                config.Strategy `json:"strategy"`
+	DoHUpstreams            []string        `json:"doh_upstreams"`
+	SystemUpstreams         []string        `json:"system_upstreams"`
+	SystemFallbackUpstreams []string        `json:"system_fallback_upstreams"`
+	PollutedDomains         []string        `json:"polluted_domains"`
+	CacheSize               int             `json:"cache_size"`
+	CacheHits               uint64          `json:"cache_hits"`
+	CacheMisses             uint64          `json:"cache_misses"`
+	Queries                 uint64          `json:"queries"`
+	DoHQueries              uint64          `json:"doh_queries"`
+	SystemQueries           uint64          `json:"system_queries"`
+	FallbackQueries         uint64          `json:"fallback_queries"`
+	Failures                uint64          `json:"failures"`
+	LastFailure             *FailureInfo    `json:"last_failure,omitempty"`
+	UptimeSeconds           int64           `json:"uptime_seconds"`
 }
 
 // StatsInterval returns the configured stats heartbeat interval (0 = off).
@@ -372,27 +417,33 @@ func (e *Engine) Status() Status {
 		doh[i] = u.URL.String()
 	}
 	sys := append([]string(nil), e.system.Addrs()...)
+	sysFB := []string{}
+	if e.systemFB != nil {
+		sysFB = append(sysFB, e.systemFB.Addrs()...)
+	}
 	domains := append([]string(nil), cfg.Domains.Polluted...)
 	listen := append([]string(nil), cfg.Listen...)
 	e.mu.RUnlock()
 
 	size, hits, misses := e.cache.Stats()
 	s := Status{
-		Version:         version.Version,
-		Mode:            cfg.Mode,
-		Listen:          listen,
-		Strategy:        cfg.Upstreams.Strategy,
-		DoHUpstreams:    doh,
-		SystemUpstreams: sys,
-		PollutedDomains: domains,
-		CacheSize:       size,
-		CacheHits:       hits,
-		CacheMisses:     misses,
-		Queries:         e.queries.Load(),
-		DoHQueries:      e.dohQueries.Load(),
-		SystemQueries:   e.sysQueries.Load(),
-		Failures:        e.failures.Load(),
-		UptimeSeconds:   int64(time.Since(e.startedAt).Seconds()),
+		Version:                 version.Version,
+		Mode:                    cfg.Mode,
+		Listen:                  listen,
+		Strategy:                cfg.Upstreams.Strategy,
+		DoHUpstreams:            doh,
+		SystemUpstreams:         sys,
+		SystemFallbackUpstreams: sysFB,
+		PollutedDomains:         domains,
+		CacheSize:               size,
+		CacheHits:               hits,
+		CacheMisses:             misses,
+		Queries:                 e.queries.Load(),
+		DoHQueries:              e.dohQueries.Load(),
+		SystemQueries:           e.sysQueries.Load(),
+		FallbackQueries:         e.fbQueries.Load(),
+		Failures:                e.failures.Load(),
+		UptimeSeconds:           int64(time.Since(e.startedAt).Seconds()),
 	}
 	if f := e.lastFailure.Load(); f != nil {
 		s.LastFailure = &FailureInfo{Error: f.Err, At: f.At}
