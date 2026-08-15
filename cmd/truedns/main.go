@@ -301,6 +301,32 @@ func serveLoop(eng *core.Engine, apiSrv *api.Server) error {
 		"system_upstreams", st.SystemUpstreams,
 		"polluted_domains", len(st.PollutedDomains),
 	)
+	// Periodic stats heartbeat so the window/log shows activity without
+	// per-query verbosity (log.stats_interval, 0 disables).
+	if iv := eng.StatsInterval(); iv > 0 {
+		go func() {
+			t := time.NewTicker(iv)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					s := eng.Status()
+					slog.Info("stats",
+						"uptime", time.Duration(s.UptimeSeconds)*time.Second,
+						"queries", s.Queries,
+						"doh", s.DoHQueries,
+						"system", s.SystemQueries,
+						"failures", s.Failures,
+						"cache_entries", s.CacheSize,
+						"cache_hits", s.CacheHits,
+						"cache_misses", s.CacheMisses,
+					)
+				}
+			}
+		}()
+	}
 	return eng.Serve(ctx)
 }
 

@@ -96,4 +96,5 @@ strip = true
 # ---------------------------------------------------------------------------
 [log]
 level = "info"           # debug | info | warn | error
-verbose_queries = false  # true 时打印每次查询 (debug 级别)
+verbose_queries = false  # true 时打印每次查询 (需 level = "debug")
+stats_interval = "1m"    # 周期统计心跳 (查询数/命中率等); "0s" 关闭

@@ -114,6 +114,9 @@ type ECSConfig struct {
 type LogConfig struct {
 	Level          string `toml:"level"`
 	VerboseQueries bool   `toml:"verbose_queries"`
+	// StatsInterval is the period of the periodic stats heartbeat line;
+	// 0 disables it.
+	StatsInterval time.Duration `toml:"stats_interval"`
 }
 
 // Default returns a Config populated with safe defaults.
@@ -149,7 +152,7 @@ func Default() *Config {
 			Listen:  "127.0.0.1:5378",
 		},
 		ECS: ECSConfig{Strip: true},
-		Log: LogConfig{Level: "info"},
+		Log: LogConfig{Level: "info", StatsInterval: time.Minute},
 	}
 }
 
@@ -232,6 +235,9 @@ func (c *Config) Validate() error {
 	case "debug", "info", "warn", "error":
 	default:
 		return fmt.Errorf("invalid log.level %q (want debug|info|warn|error)", c.Log.Level)
+	}
+	if c.Log.StatsInterval < 0 {
+		return fmt.Errorf("log.stats_interval must be >= 0 (0 disables the stats heartbeat)")
 	}
 	return nil
 }

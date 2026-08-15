@@ -105,6 +105,7 @@ Windows 下 `--no-elevate` 关闭自动 UAC 提权。
 - `domains.polluted`：后缀匹配（`github.com` 自动覆盖全部子域），支持 `*.x.com` 与 `*`
 - `upstreams.system`：留空自动发现（接管前的原 DNS 会从状态文件优先恢复使用，绝不回环查询自己）
 - `ecs`：`strip` 默认剥离客户端 ECS；`spoof` 可注入指定网段
+- `log`：`verbose_queries = true`（配合 `level = "debug"`）打印每次查询；`stats_interval` 控制周期统计心跳（默认 1 分钟，`"0s"` 关闭），运行日志同时写入 `<配置目录>/truedns.log`，可用 `truedns logs` 查看
 
 ## 控制 API（托盘 GUI 预留接口）
 

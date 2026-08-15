@@ -356,6 +356,13 @@ type Status struct {
 	UptimeSeconds   int64           `json:"uptime_seconds"`
 }
 
+// StatsInterval returns the configured stats heartbeat interval (0 = off).
+func (e *Engine) StatsInterval() time.Duration {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.cfg.Log.StatsInterval
+}
+
 // Status snapshots the engine state.
 func (e *Engine) Status() Status {
 	e.mu.RLock()
