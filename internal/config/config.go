@@ -37,11 +37,12 @@ const (
 )
 
 // DefaultPollutedDomains is the built-in list of domains whose DNS answers are
-// known to be poisoned in mainland China (GitHub ecosystem). Every entry also
-// covers all of its subdomains. dns.google / cloudflare-dns.com are included
-// so the foreign DoH endpoints themselves get clean answers: the engine's DoH
-// client resolves their hostnames through the system resolver, which after a
-// takeover is this proxy itself.
+// known to be poisoned in mainland China (GitHub ecosystem, aligned with the
+// GitHub520 domain set). Every entry also covers all of its subdomains.
+// dns.google / cloudflare-dns.com are included so the foreign DoH endpoints
+// themselves get clean answers: the engine's DoH client resolves their
+// hostnames through the system resolver, which after a takeover is this proxy
+// itself.
 var DefaultPollutedDomains = []string{
 	"github.com",
 	"github.io",
@@ -54,6 +55,18 @@ var DefaultPollutedDomains = []string{
 	"githubapp.com",
 	"github.net",
 	"ghcr.io",
+	"github.community",
+	// Fastly CDN subdomains serving GitHub pages/assets (specific subdomains
+	// only — the fastly.net parent is shared with non-GitHub customers).
+	"github.map.fastly.net",
+	"github.global.ssl.fastly.net",
+	// S3 buckets used by GitHub (specific buckets only — amazonaws.com is
+	// far too broad).
+	"github-cloud.s3.amazonaws.com",
+	"github-com.s3.amazonaws.com",
+	"github-production-release-asset-2e65be.s3.amazonaws.com",
+	"github-production-repository-file-5c1aeb.s3.amazonaws.com",
+	"github-production-user-asset-6210df.s3.amazonaws.com",
 	"dns.google",
 	"cloudflare-dns.com",
 }
