@@ -4,6 +4,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -419,6 +421,52 @@ func TestSystemFallbackChain(t *testing.T) {
 	}
 	if len(st.SystemFallbackUpstreams) != 1 || st.SystemFallbackUpstreams[0] != fbAddr {
 		t.Fatalf("fallback upstreams = %v", st.SystemFallbackUpstreams)
+	}
+}
+
+func TestOverrideRouting(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "over.hosts")
+	if err := os.WriteFile(f, []byte("10.9.8.7 pinned.github.com\n2001:db8::1 pinned.github.com\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	doh := &fakeDoH{answer: "140.82.112.4", ttl: 60}
+	srv := httptest.NewServer(doh.handler())
+	defer srv.Close()
+
+	cfg := testConfig(config.ModeSplit, srv.URL, "127.0.0.1:9", "github.com")
+	cfg.Override.Files = []string{f}
+	cfg.Override.TTL = 30 * time.Second
+	e, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Shutdown()
+
+	// Override wins over the polluted-domain DoH routing.
+	resp := query(t, e, "pinned.github.com", dns.TypeA, false)
+	if got := firstA(t, resp); got != "10.9.8.7" {
+		t.Fatalf("override A = %s", got)
+	}
+	if n := doh.queries.Load(); n != 0 {
+		t.Fatalf("DoH queries = %d, want 0 (override must not hit upstreams)", n)
+	}
+	// AAAA record from the same table entry.
+	resp = query(t, e, "pinned.github.com", dns.TypeAAAA, false)
+	if len(resp.Answer) != 1 {
+		t.Fatalf("AAAA answers = %d", len(resp.Answer))
+	}
+	if aaaa, ok := resp.Answer[0].(*dns.AAAA); !ok || aaaa.AAAA.String() != "2001:db8::1" {
+		t.Fatalf("AAAA answer = %v", resp.Answer[0])
+	}
+	// Second A query is served from cache, not counted as override query.
+	_ = query(t, e, "pinned.github.com", dns.TypeA, false)
+	st := e.Status()
+	if st.OverrideQueries != 2 {
+		t.Fatalf("override queries = %d, want 2", st.OverrideQueries)
+	}
+	if st.OverrideEntries != 1 {
+		t.Fatalf("override entries = %d, want 1", st.OverrideEntries)
 	}
 }
 

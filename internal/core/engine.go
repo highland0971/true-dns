@@ -34,23 +34,25 @@ type failure struct {
 
 // Engine routes and answers DNS queries. It is safe for concurrent use.
 type Engine struct {
-	mu       sync.RWMutex
-	cfg      *config.Config
-	matcher  *matcher.Matcher
-	cache    *cache.Cache
-	doh      []*resolver.DoH
-	system   *resolver.Plain
-	systemFB *resolver.Plain // public fallback chain (upstreams.fallback)
-	sem      chan struct{}
-	rot      atomic.Uint64 // failover rotation
+	mu        sync.RWMutex
+	cfg       *config.Config
+	matcher   *matcher.Matcher
+	cache     *cache.Cache
+	doh       []*resolver.DoH
+	system    *resolver.Plain
+	systemFB  *resolver.Plain // public fallback chain (upstreams.fallback)
+	overrideM *overrideManager
+	sem       chan struct{}
+	rot       atomic.Uint64 // failover rotation
 
-	startedAt   time.Time
-	queries     atomic.Uint64
-	dohQueries  atomic.Uint64
-	sysQueries  atomic.Uint64
-	fbQueries   atomic.Uint64
-	failures    atomic.Uint64
-	lastFailure atomic.Pointer[failure]
+	startedAt       time.Time
+	queries         atomic.Uint64
+	dohQueries      atomic.Uint64
+	sysQueries      atomic.Uint64
+	fbQueries       atomic.Uint64
+	overrideQueries atomic.Uint64
+	failures        atomic.Uint64
+	lastFailure     atomic.Pointer[failure]
 }
 
 // New builds an Engine from cfg.
@@ -69,6 +71,7 @@ func New(cfg *config.Config) (*Engine, error) {
 		doh:       doh,
 		system:    sys,
 		systemFB:  fb,
+		overrideM: newOverrideManager(cfg),
 		sem:       make(chan struct{}, maxInflight),
 		startedAt: time.Now(),
 	}, nil
@@ -127,11 +130,25 @@ func (e *Engine) Reload(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	om := newOverrideManager(cfg)
 	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.cfg, e.matcher, e.doh, e.system, e.systemFB = cfg, m, doh, sys, fb
+	old := e.overrideM
+	e.cfg, e.matcher, e.doh, e.system, e.systemFB, e.overrideM = cfg, m, doh, sys, fb, om
+	e.mu.Unlock()
+	old.shutdown()
 	e.cache.Flush()
 	return nil
+}
+
+// Shutdown stops background work (override refresh loop).
+func (e *Engine) Shutdown() {
+	e.mu.Lock()
+	om := e.overrideM
+	e.overrideM = nil
+	e.mu.Unlock()
+	if om != nil {
+		om.shutdown()
+	}
 }
 
 // ServeDNS implements dns.Handler.
@@ -155,6 +172,28 @@ func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
+	// Hosts-format IP override table takes precedence over upstream routing
+	// for A/AAAA queries on covered names.
+	e.mu.RLock()
+	om := e.overrideM
+	cfg := e.cfg
+	e.mu.RUnlock()
+	if om != nil {
+		if ips := om.lookup(q.Name); len(ips) > 0 && (q.Qtype == dns.TypeA || q.Qtype == dns.TypeAAAA) {
+			resp := synthesizeOverride(r, q, ips, cfg.Override.TTL)
+			e.overrideQueries.Add(1)
+			resp.Id = r.Id
+			resp.Question = []dns.Question{q}
+			finalizeEDNS(r, resp)
+			if ttl := cache.TTLFromMsg(resp, cfg.Cache.MaxTTL); ttl > 0 {
+				e.cache.Put(key, resp, ttl)
+			}
+			e.logQuery(r, resp, "override", time.Since(start))
+			_ = w.WriteMsg(resp)
+			return
+		}
+	}
+
 	// Concurrency limit: answer SERVFAIL when saturated; clients retry.
 	select {
 	case e.sem <- struct{}{}:
@@ -165,7 +204,7 @@ func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	}
 
 	e.mu.RLock()
-	cfg := e.cfg
+	cfg = e.cfg
 	viaDoH := cfg.Mode == config.ModeFull || e.matcher.Match(q.Name)
 	dohUp := e.doh
 	sysUp := e.system
@@ -235,6 +274,36 @@ func routeName(viaDoH bool) string {
 		return "doh"
 	}
 	return "system"
+}
+
+// synthesizeOverride builds an A/AAAA answer directly from override-table IPs.
+func synthesizeOverride(r *dns.Msg, q dns.Question, ips []net.IP, ttl time.Duration) *dns.Msg {
+	m := new(dns.Msg)
+	m.SetReply(r)
+	m.RecursionAvailable = true
+	ttl32 := uint32(ttl / time.Second)
+	if ttl32 < 1 {
+		ttl32 = 1
+	}
+	for _, ip := range ips {
+		switch q.Qtype {
+		case dns.TypeA:
+			if v4 := ip.To4(); v4 != nil {
+				m.Answer = append(m.Answer, &dns.A{
+					Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl32},
+					A:   v4,
+				})
+			}
+		case dns.TypeAAAA:
+			if ip.To4() == nil {
+				m.Answer = append(m.Answer, &dns.AAAA{
+					Hdr:  dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl32},
+					AAAA: ip.To16(),
+				})
+			}
+		}
+	}
+	return m
 }
 
 func (e *Engine) replyRcode(w dns.ResponseWriter, r *dns.Msg, code int) {
@@ -396,6 +465,10 @@ type Status struct {
 	DoHQueries              uint64          `json:"doh_queries"`
 	SystemQueries           uint64          `json:"system_queries"`
 	FallbackQueries         uint64          `json:"fallback_queries"`
+	OverrideQueries         uint64          `json:"override_queries"`
+	OverrideEntries         int             `json:"override_entries"`
+	OverrideUpdatedAt       time.Time       `json:"override_updated_at,omitempty"`
+	OverrideLastError       string          `json:"override_last_error,omitempty"`
 	Failures                uint64          `json:"failures"`
 	LastFailure             *FailureInfo    `json:"last_failure,omitempty"`
 	UptimeSeconds           int64           `json:"uptime_seconds"`
@@ -423,6 +496,7 @@ func (e *Engine) Status() Status {
 	}
 	domains := append([]string(nil), cfg.Domains.Polluted...)
 	listen := append([]string(nil), cfg.Listen...)
+	om := e.overrideM
 	e.mu.RUnlock()
 
 	size, hits, misses := e.cache.Stats()
@@ -442,8 +516,15 @@ func (e *Engine) Status() Status {
 		DoHQueries:              e.dohQueries.Load(),
 		SystemQueries:           e.sysQueries.Load(),
 		FallbackQueries:         e.fbQueries.Load(),
+		OverrideQueries:         e.overrideQueries.Load(),
 		Failures:                e.failures.Load(),
 		UptimeSeconds:           int64(time.Since(e.startedAt).Seconds()),
+	}
+	if om != nil {
+		meta := om.meta()
+		s.OverrideEntries = meta.Entries
+		s.OverrideUpdatedAt = meta.UpdatedAt
+		s.OverrideLastError = meta.LastError
 	}
 	if f := e.lastFailure.Load(); f != nil {
 		s.LastFailure = &FailureInfo{Error: f.Err, At: f.At}

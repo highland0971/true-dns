@@ -332,6 +332,7 @@ func startProxy(cfgPath string, cfg *config.Config) (*core.Engine, *api.Server, 
 }
 
 func serveLoop(eng *core.Engine, apiSrv *api.Server) error {
+	defer eng.Shutdown() // stop override refresh loops etc.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if apiSrv != nil {
@@ -353,6 +354,7 @@ func serveLoop(eng *core.Engine, apiSrv *api.Server) error {
 		"system_upstreams", st.SystemUpstreams,
 		"system_fallback_upstreams", st.SystemFallbackUpstreams,
 		"polluted_domains", len(st.PollutedDomains),
+		"override_entries", st.OverrideEntries,
 	)
 	// Periodic stats heartbeat so the window/log shows activity without
 	// per-query verbosity (log.stats_interval, 0 disables).
@@ -384,7 +386,6 @@ func serveLoop(eng *core.Engine, apiSrv *api.Server) error {
 }
 
 // ---- commands ----
-
 func cmdServe(fs *flag.FlagSet, args []string) error {
 	g := addGlobalFlags(fs)
 	if err := fs.Parse(args); err != nil {
