@@ -80,6 +80,7 @@ type Config struct {
 	Cache     CacheConfig    `toml:"cache"`
 	API       APIConfig      `toml:"api"`
 	ECS       ECSConfig      `toml:"ecs"`
+	Override  OverrideConfig `toml:"override"`
 	Log       LogConfig      `toml:"log"`
 }
 
@@ -113,6 +114,21 @@ type UpstreamConfig struct {
 type CacheConfig struct {
 	MaxTTL     time.Duration `toml:"max_ttl"`
 	MaxEntries int           `toml:"max_entries"`
+}
+
+// OverrideConfig configures the hosts-format IP override table (GitHub520
+// subscriptions etc.): listed hostnames are answered directly from the table
+// instead of going through the upstream routing.
+type OverrideConfig struct {
+	// URLs of hosts-format lists, fetched at startup (and periodically when
+	// refresh_interval > 0).
+	URLs []string `toml:"urls"`
+	// Files parsed at startup (local hosts files).
+	Files []string `toml:"files"`
+	// TTL for answers synthesized from the override table.
+	TTL time.Duration `toml:"ttl"`
+	// RefreshInterval re-fetches the URLs; 0 = fetch once at startup.
+	RefreshInterval time.Duration `toml:"refresh_interval"`
 }
 
 // APIConfig configures the local control API used by the tray GUI.
@@ -174,6 +190,9 @@ func Default() *Config {
 			Listen:  "127.0.0.1:5378",
 		},
 		ECS: ECSConfig{Strip: true},
+		Override: OverrideConfig{
+			TTL: 5 * time.Minute,
+		},
 		Log: LogConfig{Level: "info", StatsInterval: time.Minute},
 	}
 }
@@ -252,6 +271,12 @@ func (c *Config) Validate() error {
 		if _, _, err := net.ParseCIDR(c.ECS.Spoof); err != nil {
 			return fmt.Errorf("ecs.spoof %q is not a valid CIDR: %w", c.ECS.Spoof, err)
 		}
+	}
+	if c.Override.TTL <= 0 || c.Override.TTL > 24*time.Hour {
+		return fmt.Errorf("override.ttl must be within (0s, 24h]")
+	}
+	if c.Override.RefreshInterval < 0 {
+		return fmt.Errorf("override.refresh_interval must be >= 0 (0 = startup only)")
 	}
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
