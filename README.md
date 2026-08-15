@@ -79,6 +79,16 @@ truedns restore    # 手动恢复系统 DNS (异常退出后使用)
 > `truedns setup` 只接管 DNS 不启动代理（需自行 `serve`）；`truedns serve` 只启动代理不接管。
 > 配置生成：`truedns config init` 写入 `%ProgramData%\truedns\config.toml`。
 
+### Windows 托盘 GUI
+
+运行 `truedns tray` 在系统托盘驻留一个控制图标（蓝底白点），无需常驻控制台窗口：
+
+- **启动代理**：以管理员权限拉起 `truedns run`（弹 UAC）
+- **停止代理**：经控制 API 优雅停止，系统 DNS 自动恢复
+- **清空缓存 / 恢复系统 DNS**（紧急恢复）/ **打开日志、配置文件**
+- 托盘菜单与悬停提示每 3 秒刷新：运行状态、模式、查询/失败计数、缓存命中、DNS 接管状态
+- 托盘本身不持有解析功能，退出托盘不影响代理运行
+
 ### Linux 使用
 
 ```bash
@@ -98,6 +108,9 @@ sudo systemctl enable --now truedns
 | `truedns setup` | 仅接管系统 DNS（`--force` 重复接管） |
 | `truedns restore` | 恢复接管前的系统 DNS 设置 |
 | `truedns status` | 接管状态 + 代理运行状态（经控制 API） |
+| `truedns flush` | 清空代理缓存（经控制 API） |
+| `truedns logs` | 查看代理日志（排查启动失败） |
+| `truedns tray` | 启动 Windows 系统托盘 GUI（仅 Windows） |
 | `truedns flush` | 清空代理缓存 |
 | `truedns config init/show/path` | 生成配置 / 查看合并配置 / 查看配置路径 |
 | `truedns version` | 版本信息 |
