@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -44,19 +45,22 @@ func cmdTray(fs *flag.FlagSet, args []string) error {
 		cfg = config.Default() // tray works even before first run
 	}
 	st := &trayState{
-		cfgPath: cfgPath,
-		cfg:     cfg,
-		client:  &http.Client{Timeout: 2 * time.Second},
+		cfgPath:      cfgPath,
+		cfgPathGiven: *g.cfgPath != "",
+		cfg:          cfg,
+		client:       &http.Client{Timeout: 2 * time.Second},
 	}
 	systray.Run(st.onReady, st.onExit)
 	return nil
 }
 
 type trayState struct {
-	cfgPath string
-	cfg     *config.Config
-	client  *http.Client
-	mStatus *systray.MenuItem
+	cfgPath      string
+	cfgPathGiven bool // --config was passed explicitly
+	cfg          *config.Config
+	client       *http.Client
+	mStatus      *systray.MenuItem
+	titleMu      sync.Mutex // SetTitle is not internally synchronized by systray
 }
 
 func (t *trayState) onReady() {
@@ -149,17 +153,32 @@ func (t *trayState) refresh() {
 	} else {
 		line += " | DNS 未接管"
 	}
-	t.mStatus.SetTitle(line)
+	t.setStatus(line)
 	systray.SetTooltip(tooltip)
 }
 
+// setStatus serializes SetTitle calls (menu handlers and the poll loop run
+// on different goroutines; systray does not synchronize them internally).
+func (t *trayState) setStatus(s string) {
+	t.titleMu.Lock()
+	defer t.titleMu.Unlock()
+	t.mStatus.SetTitle(s)
+}
+
 // startProxy launches "truedns run" elevated (the run command performs the
-// DNS takeover itself).
+// DNS takeover itself). When the tray was started without an explicit
+// --config, none is passed so run's first-run bootstrap (default config
+// generation) still applies.
 func (t *trayState) startProxy() {
-	args := []string{"run", "--config", t.cfgPath}
+	var args []string
+	if t.cfgPathGiven {
+		args = []string{"run", "--config", t.cfgPath}
+	} else {
+		args = []string{"run"}
+	}
 	if !platform.IsElevated() {
 		if _, err := platform.ElevateArgs(args); err != nil {
-			t.mStatus.SetTitle("启动失败: " + err.Error())
+			t.setStatus("启动失败: " + err.Error())
 		}
 		return
 	}
@@ -170,7 +189,7 @@ func (t *trayState) startProxy() {
 func (t *trayState) restoreDNS() {
 	if !platform.IsElevated() {
 		if _, err := platform.ElevateArgs([]string{"restore"}); err != nil {
-			t.mStatus.SetTitle("恢复失败: " + err.Error())
+			t.setStatus("恢复失败: " + err.Error())
 		}
 		return
 	}
@@ -181,14 +200,14 @@ func (t *trayState) restoreDNS() {
 // process restores the system DNS on exit.
 func (t *trayState) stopProxy() {
 	if err := t.post("/api/v1/shutdown"); err != nil {
-		t.mStatus.SetTitle("停止失败: " + err.Error())
+		t.setStatus("停止失败: " + err.Error())
 	}
 }
 
 // flushCache clears the proxy cache via the control API.
 func (t *trayState) flushCache() {
 	if err := t.post("/api/v1/flush"); err != nil {
-		t.mStatus.SetTitle("清空缓存失败: " + err.Error())
+		t.setStatus("清空缓存失败: " + err.Error())
 	}
 }
 
@@ -217,13 +236,13 @@ func (t *trayState) post(path string) error {
 func (t *trayState) spawnHidden(args ...string) {
 	exe, err := os.Executable()
 	if err != nil {
-		t.mStatus.SetTitle("启动失败: " + err.Error())
+		t.setStatus("启动失败: " + err.Error())
 		return
 	}
 	cmd := exec.Command(exe, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	if err := cmd.Start(); err != nil {
-		t.mStatus.SetTitle("启动失败: " + err.Error())
+		t.setStatus("启动失败: " + err.Error())
 	}
 }
 

@@ -111,7 +111,6 @@ sudo systemctl enable --now truedns
 | `truedns flush` | 清空代理缓存（经控制 API） |
 | `truedns logs` | 查看代理日志（排查启动失败） |
 | `truedns tray` | 启动 Windows 系统托盘 GUI（仅 Windows） |
-| `truedns flush` | 清空代理缓存 |
 | `truedns config init/show/path` | 生成配置 / 查看合并配置 / 查看配置路径 |
 | `truedns version` | 版本信息 |
 
