@@ -1,5 +1,10 @@
 # true-dns
 
+[![CI](https://github.com/highland0971/true-dns/actions/workflows/ci.yml/badge.svg)](https://github.com/highland0971/true-dns/actions/workflows/ci.yml)
+[![GitHub release](https://img.shields.io/github/v/release/highland0971/true-dns)](https://github.com/highland0971/true-dns/releases)
+
+> 仓库: <https://github.com/highland0971/true-dns> · 问题反馈与功能建议请提交 [Issue](https://github.com/highland0971/true-dns/issues) · 贡献与开发纪律见 [CONTRIBUTING.md](CONTRIBUTING.md)
+
 **true-dns** 是一个跨平台的本地 DNS 反污染代理工具：它通过 **DoH (DNS over HTTPS)** 加密上游还原被污染域名的真实 IP（默认内置 GitHub 生态域名清单），并**接管系统 DNS 解析请求**——被污染域名走加密上游，其余请求直通系统默认 DNS（可选全代理模式）。
 
 - Windows：修改系统 DNS 指向 `127.0.0.1`（注册表级接管 + UAC 自动提权 + 退出自动恢复）
@@ -31,6 +36,10 @@
 - **可配置**：TOML 配置，域名清单/上游/缓存/日志全可调，运行中可 `reload`
 
 ## 快速开始
+
+### 下载（推荐）
+
+在 [Releases](https://github.com/highland0971/true-dns/releases) 页面下载对应平台的二进制（附 SHA256SUMS 校验文件），Windows 用户直接运行 `truedns run` 即可。
 
 ### 构建
 
