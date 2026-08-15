@@ -35,6 +35,16 @@ polluted = [
   "githubapp.com",
   "github.net",
   "ghcr.io",
+  "github.community",
+  # GitHub 资产所用 Fastly CDN 子域 (仅具体子域, fastly.net 父域与其他客户共享)。
+  "github.map.fastly.net",
+  "github.global.ssl.fastly.net",
+  # GitHub 所用 S3 存储桶 (仅具体桶, amazonaws.com 父域过宽)。
+  "github-cloud.s3.amazonaws.com",
+  "github-com.s3.amazonaws.com",
+  "github-production-release-asset-2e65be.s3.amazonaws.com",
+  "github-production-repository-file-5c1aeb.s3.amazonaws.com",
+  "github-production-user-asset-6210df.s3.amazonaws.com",
   # 境外 DoH 域名本身也是被污染目标: 加入清单后, 引擎的 DoH 客户端
   # 解析其主机名时经本代理获得干净 IP, 使备用境外上游真正可用。
   "dns.google",
