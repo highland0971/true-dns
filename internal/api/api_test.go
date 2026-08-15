@@ -28,8 +28,17 @@ func testEngine(t *testing.T) *core.Engine {
 	return eng
 }
 
+// setTestStateDir redirects state files (api-port) into a temp directory so
+// tests never touch the real config directory. Works for root too, unlike a
+// HOME override.
+func setTestStateDir(t *testing.T) {
+	t.Helper()
+	t.Setenv("TRUEDNS_STATE_DIR", t.TempDir())
+}
+
 func newTestServer(t *testing.T, token string) *Server {
 	t.Helper()
+	setTestStateDir(t)
 	s := New("127.0.0.1:0", token, testEngine(t), nil)
 	if err := s.Start(); err != nil {
 		t.Fatal(err)
@@ -127,6 +136,7 @@ func TestReloadDisabled(t *testing.T) {
 }
 
 func TestShutdown(t *testing.T) {
+	setTestStateDir(t)
 	eng := testEngine(t)
 	s := New("127.0.0.1:0", "", eng, nil)
 	called := make(chan struct{}, 1)
@@ -152,9 +162,7 @@ func TestShutdown(t *testing.T) {
 }
 
 func TestPortFallback(t *testing.T) {
-	// StateDir may be unwritable (sandbox HOME); use a temp HOME so the
-	// port file lands somewhere real.
-	t.Setenv("HOME", t.TempDir())
+	setTestStateDir(t)
 	// Occupy a port and confirm the API falls back to another candidate and
 	// persists it to the api-port file.
 	blocker, err := net.Listen("tcp", "127.0.0.1:0")

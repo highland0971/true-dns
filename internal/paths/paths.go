@@ -9,9 +9,16 @@ import (
 )
 
 // StateDir returns the directory holding config.toml and takeover-state.json.
+// The TRUEDNS_STATE_DIR environment variable overrides the platform default
+// (portable installs, tests; honored on every OS including root, where HOME
+// redirection has no effect).
+//
 // Windows: %ProgramData%\truedns. Linux (root): /etc/truedns; otherwise the
 // per-user XDG config directory so non-root development also works.
 func StateDir() string {
+	if v := os.Getenv("TRUEDNS_STATE_DIR"); v != "" {
+		return v
+	}
 	if runtime.GOOS == "windows" {
 		pd := os.Getenv("ProgramData")
 		if pd == "" {

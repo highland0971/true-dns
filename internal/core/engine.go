@@ -192,15 +192,14 @@ func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 		if err != nil && fbUp != nil {
 			// Discovered system upstreams can be dead (e.g. VM host-only
 			// gateways); give the configured public fallback chain its own
-			// timeout budget.
+			// timeout budget. The route stays "system-fallback" even when
+			// the fallback also fails, preserving the failure path in logs.
+			route = "system-fallback"
 			slog.Debug("system upstream failed, trying public fallback", "qname", q.Name, "err", err)
 			fctx, fcancel := context.WithTimeout(context.Background(), cfg.Upstreams.Timeout)
 			e.fbQueries.Add(1)
 			resp, err = fbUp.Exchange(fctx, out)
 			fcancel()
-			if err == nil {
-				route = "system-fallback"
-			}
 		}
 		if err != nil && cfg.Upstreams.FallbackToDoH {
 			slog.Warn("system upstreams failed, falling back to DoH", "qname", q.Name, "err", err)
@@ -418,7 +417,7 @@ func (e *Engine) Status() Status {
 		doh[i] = u.URL.String()
 	}
 	sys := append([]string(nil), e.system.Addrs()...)
-	var sysFB []string
+	sysFB := []string{}
 	if e.systemFB != nil {
 		sysFB = append(sysFB, e.systemFB.Addrs()...)
 	}
