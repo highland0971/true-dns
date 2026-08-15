@@ -150,8 +150,25 @@ func adapterActive(dhcp string, ips []string, nameServer, dhcpNameServer string)
 // must never be used as an upstream).
 var DefaultFallbackServers = []string{"223.5.5.5", "119.29.29.29", "1.1.1.1"}
 
+// localIPSet returns the set of IP addresses configured on this machine.
+// Asking one of them for DNS would mean querying ourselves (VM host-only
+// adapters etc.), so discovery filters them out.
+var localIPSet = func() map[string]bool {
+	ips := map[string]bool{}
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return ips
+	}
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && ipn.IP != nil {
+			ips[ipn.IP.String()] = true
+		}
+	}
+	return ips
+}()
+
 // normalizeAddrs dedupes DNS server addresses, drops loopback/unspecified/
-// malformed entries and appends port 53 when missing.
+// self/malformed entries and appends port 53 when missing.
 func normalizeAddrs(in []string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -167,6 +184,9 @@ func normalizeAddrs(in []string) []string {
 		ip := net.ParseIP(strings.Trim(host, "[]"))
 		if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
 			continue
+		}
+		if localIPSet[ip.String()] {
+			continue // one of this machine's own addresses
 		}
 		withPort, err := addPort(a)
 		if err != nil {

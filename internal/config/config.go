@@ -125,7 +125,14 @@ func Default() *Config {
 			Polluted: append([]string(nil), DefaultPollutedDomains...),
 		},
 		Upstreams: UpstreamConfig{
+			// Order matters with strategy=failover; with the default race
+			// strategy the fastest reachable endpoint wins. China-reachable
+			// endpoints come first (AliDNS/DNSPod answer GitHub correctly),
+			// foreign ones follow for users with proxy_url or unfiltered
+			// networks.
 			DoH: []string{
+				"https://dns.alidns.com/dns-query",
+				"https://doh.pub/dns-query",
 				"https://dns.google/dns-query",
 				"https://cloudflare-dns.com/dns-query",
 			},

@@ -170,7 +170,7 @@ func (e *Engine) ServeDNS(w dns.ResponseWriter, r *dns.Msg) {
 	if err != nil {
 		e.failures.Add(1)
 		e.lastFailure.Store(&failure{Err: err.Error(), At: time.Now()})
-		slog.Debug("resolve failed",
+		slog.Warn("resolve failed",
 			"qname", q.Name, "qtype", dns.TypeToString[q.Qtype],
 			"route", routeName(viaDoH), "err", err)
 		e.replyRcode(w, r, dns.RcodeServerFailure)

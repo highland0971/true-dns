@@ -1,6 +1,33 @@
 package platform
 
-import "testing"
+import (
+	"net"
+	"testing"
+)
+
+func TestNormalizeAddrsFiltersSelfAndLoopback(t *testing.T) {
+	// Pick one of this machine's own non-loopback IPs, if any.
+	var self string
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range addrs {
+		if ipn, ok := a.(*net.IPNet); ok && ipn.IP != nil {
+			if ip := ipn.IP.To4(); ip != nil && !ip.IsLoopback() {
+				self = ip.String()
+				break
+			}
+		}
+	}
+	if self == "" {
+		t.Skip("no non-loopback local IP available")
+	}
+	out := normalizeAddrs([]string{self, "127.0.0.1", "8.8.8.8", "8.8.8.8"})
+	if len(out) != 1 || out[0] != "8.8.8.8:53" {
+		t.Fatalf("normalizeAddrs = %v, want [8.8.8.8:53]", out)
+	}
+}
 
 func TestAdapterActive(t *testing.T) {
 	cases := []struct {

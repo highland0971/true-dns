@@ -84,6 +84,28 @@ func TestPlainTCPFallback(t *testing.T) {
 	}
 }
 
+func TestPlainRaceAcrossAddresses(t *testing.T) {
+	// One live upstream, one dead address (closed port). The dead one must
+	// not delay the answer.
+	full := func(req *dns.Msg) *dns.Msg { return cannedResponse(req, "10.0.0.3", 60) }
+	live := startPlainServer(t, full, full)
+	dead := "127.0.0.1:1" // nothing listens: instant ICMP refusal
+	p := NewPlain([]string{dead, live}, 2*time.Second)
+	q := new(dns.Msg)
+	q.SetQuestion("example.com.", dns.TypeA)
+	start := time.Now()
+	resp, err := p.Exchange(context.Background(), q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := resp.Answer[0].(*dns.A).A.String(); a != "10.0.0.3" {
+		t.Fatalf("answer = %s", a)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("dead upstream delayed the answer: %v", elapsed)
+	}
+}
+
 func TestWithPort(t *testing.T) {
 	cases := map[string]string{
 		"1.2.3.4":         "1.2.3.4:53",

@@ -42,8 +42,12 @@ polluted = [
 # ---------------------------------------------------------------------------
 [upstreams]
 # DoH (DNS over HTTPS) 加密上游: 查询经 TLS 加密发送, 无法被中途注入伪造应答。
-# 国内直连不稳定时, 可配 proxy_url 走本地代理软件。
+# 默认顺序: 国内可达且对 GitHub 返回真实 IP 的端点在前 (阿里/DNSPod),
+# Google/Cloudflare 作为备选 (需 proxy_url 或未受污染的网络)。
+# strategy = "race" 时并发询问, 取最快有效应答。
 doh = [
+  "https://dns.alidns.com/dns-query",
+  "https://doh.pub/dns-query",
   "https://dns.google/dns-query",
   "https://cloudflare-dns.com/dns-query",
 ]

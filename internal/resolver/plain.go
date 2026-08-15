@@ -6,19 +6,18 @@ import (
 	"fmt"
 	"net"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
 )
 
-// Plain is a classic plaintext DNS upstream. Queries go out over UDP with a
-// TCP retry when the response is truncated; addresses are tried round-robin.
+// Plain is a classic plaintext DNS upstream. All configured addresses are
+// queried concurrently (first valid answer wins) with a TCP retry per address
+// when its UDP response is truncated.
 type Plain struct {
 	addrs []string
 	udp   *dns.Client
 	tcp   *dns.Client
-	next  atomic.Uint64
 }
 
 // NewPlain creates a Plain upstream for the given addresses ("1.2.3.4" or
@@ -40,32 +39,64 @@ func NewPlain(addrs []string, timeout time.Duration) *Plain {
 // Addrs returns the configured upstream addresses.
 func (p *Plain) Addrs() []string { return p.addrs }
 
-// Exchange queries the addresses round-robin until one answers. On a
-// truncated UDP reply it retries the same address over TCP.
+// Exchange queries all addresses concurrently and returns the first valid
+// answer (dead upstreams — e.g. VM host-only adapters — cannot delay the
+// query). On a truncated UDP reply it retries the same address over TCP.
 func (p *Plain) Exchange(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
 	if len(p.addrs) == 0 {
 		return nil, errors.New("no plain upstream addresses configured")
 	}
-	start := int((p.next.Add(1) - 1) % uint64(len(p.addrs)))
-	var lastErr error
-	for i := 0; i < len(p.addrs); i++ {
-		addr := p.addrs[(start+i)%len(p.addrs)]
-		resp, _, err := p.udp.ExchangeContext(ctx, req, addr)
-		if err != nil {
-			lastErr = fmt.Errorf("udp %s: %w", addr, err)
-			continue
-		}
-		if resp.Truncated {
-			if t, _, terr := p.tcp.ExchangeContext(ctx, req, addr); terr == nil {
-				return t, nil
-			} else {
-				lastErr = fmt.Errorf("tcp %s: %w", addr, terr)
+	if len(p.addrs) == 1 {
+		return p.exchangeAddr(ctx, req, p.addrs[0])
+	}
+	type result struct {
+		resp *dns.Msg
+		err  error
+	}
+	results := make(chan result, len(p.addrs))
+	for _, addr := range p.addrs {
+		go func(addr string) {
+			resp, err := p.exchangeAddr(ctx, req, addr)
+			select {
+			case results <- result{resp, err}:
+			case <-ctx.Done():
+			}
+		}(addr)
+	}
+	var firstErr error
+	for range p.addrs {
+		select {
+		case <-ctx.Done():
+			if firstErr == nil {
+				firstErr = ctx.Err()
+			}
+			return nil, firstErr
+		case r := <-results:
+			if r.err != nil {
+				if firstErr == nil {
+					firstErr = r.err
+				}
 				continue
 			}
+			return r.resp, nil
 		}
-		return resp, nil
 	}
-	return nil, lastErr
+	return nil, firstErr
+}
+
+func (p *Plain) exchangeAddr(ctx context.Context, req *dns.Msg, addr string) (*dns.Msg, error) {
+	resp, _, err := p.udp.ExchangeContext(ctx, req, addr)
+	if err != nil {
+		return nil, fmt.Errorf("udp %s: %w", addr, err)
+	}
+	if resp.Truncated {
+		t, _, terr := p.tcp.ExchangeContext(ctx, req, addr)
+		if terr != nil {
+			return nil, fmt.Errorf("tcp %s: %w", addr, terr)
+		}
+		return t, nil
+	}
+	return resp, nil
 }
 
 // WithPort normalizes a DNS server address, appending port 53 when missing.
