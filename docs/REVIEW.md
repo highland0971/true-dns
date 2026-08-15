@@ -7,7 +7,7 @@ Review 未通过或 CI 未绿一律不得合入。**
 
 - 与作者**不共享上下文**：优先派发独立子代理（subagent）执行，或由人类 reviewer 执行；作者不得审查自己的 PR。
 - 审查基于实际 diff：子代理应在本地 checkout 拉取 PR 分支，`git diff origin/main...<分支>` 逐一过目，而非只读 PR 描述。
-- 审查方**自行运行质量门**，不得信任作者声称的结果：
+- 审查方**自行运行质量门**，不得信任作者声称的结果（首次执行前先 `source .toolchain/env.sh` 启用仓库内置 Go 工具链）：
   - `go test ./...`、`go vet ./...`
   - `test -z "$(gofmt -l cmd internal)"`
   - `GOOS=windows GOARCH=amd64 go build ./cmd/truedns` 与 `GOOS=linux GOARCH=amd64 go build ./cmd/truedns`

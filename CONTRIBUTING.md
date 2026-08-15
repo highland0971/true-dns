@@ -48,4 +48,4 @@
 
 ## 分支保护（严格 PR 模式）
 
-`main` 分支已启用保护：必须通过 PR 合入、必须通过 CI 状态检查。单人开发时允许自行合入（不强制他人 review），但流程本身（Issue → 分支 → PR → **独立 Review**）不可跳过——Review 环节由本文档与 [docs/REVIEW.md](docs/REVIEW.md) 强制，不以 GitHub 的 APPROVE 计数为唯一依据。
+`main` 分支已启用保护：必须通过 PR 合入、必须通过 CI 状态检查。单人开发时允许自行合入——reviewer 可为独立子代理，无需第二个人类账号——但流程本身（Issue → 分支 → PR → **独立 Review**）不可跳过：Review 环节由本文档与 [docs/REVIEW.md](docs/REVIEW.md) 强制，不以 GitHub 的 APPROVE 计数为唯一依据。
