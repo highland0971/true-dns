@@ -81,6 +81,7 @@ type Config struct {
 	API       APIConfig      `toml:"api"`
 	ECS       ECSConfig      `toml:"ecs"`
 	Override  OverrideConfig `toml:"override"`
+	Probe     ProbeConfig    `toml:"probe"`
 	Log       LogConfig      `toml:"log"`
 }
 
@@ -147,6 +148,24 @@ type ECSConfig struct {
 	Spoof string `toml:"spoof"`
 }
 
+// ProbeConfig tunes the optional reachability probing of polluted-domain
+// answers (GitHub520-style TCP probing). Disabled by default.
+type ProbeConfig struct {
+	// Enabled turns probing on for DoH-sourced polluted-domain answers.
+	Enabled bool `toml:"enabled"`
+	// Port is the TCP port dialed to test reachability.
+	Port int `toml:"port"`
+	// Timeout is the per-IP dial timeout.
+	Timeout time.Duration `toml:"timeout"`
+	// Mode is "drop" (remove unreachable IPs, keep originals when none
+	// reachable) or "prefer" (reachable first by latency, nothing dropped).
+	Mode string `toml:"mode"`
+	// MaxIPs caps how many IPs per family are probed per answer.
+	MaxIPs int `toml:"max_ips"`
+	// CacheTTL caches probe results per IP (0 disables caching).
+	CacheTTL time.Duration `toml:"cache_ttl"`
+}
+
 // LogConfig tunes logging.
 type LogConfig struct {
 	Level          string `toml:"level"`
@@ -192,6 +211,13 @@ func Default() *Config {
 		ECS: ECSConfig{Strip: true},
 		Override: OverrideConfig{
 			TTL: 5 * time.Minute,
+		},
+		Probe: ProbeConfig{
+			Port:     443,
+			Timeout:  700 * time.Millisecond,
+			Mode:     "drop",
+			MaxIPs:   8,
+			CacheTTL: time.Minute,
 		},
 		Log: LogConfig{Level: "info", StatsInterval: time.Minute},
 	}
@@ -277,6 +303,23 @@ func (c *Config) Validate() error {
 	}
 	if c.Override.RefreshInterval < 0 {
 		return fmt.Errorf("override.refresh_interval must be >= 0 (0 = startup only)")
+	}
+	switch c.Probe.Mode {
+	case "drop", "prefer":
+	default:
+		return fmt.Errorf("invalid probe.mode %q (want \"drop\" or \"prefer\")", c.Probe.Mode)
+	}
+	if c.Probe.Port < 1 || c.Probe.Port > 65535 {
+		return fmt.Errorf("probe.port must be within [1, 65535]")
+	}
+	if c.Probe.Timeout <= 0 || c.Probe.Timeout > 10*time.Second {
+		return fmt.Errorf("probe.timeout must be within (0s, 10s]")
+	}
+	if c.Probe.MaxIPs <= 0 {
+		return fmt.Errorf("probe.max_ips must be > 0")
+	}
+	if c.Probe.CacheTTL < 0 {
+		return fmt.Errorf("probe.cache_ttl must be >= 0 (0 disables caching)")
 	}
 	switch c.Log.Level {
 	case "debug", "info", "warn", "error":
