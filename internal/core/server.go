@@ -82,7 +82,7 @@ func portHint(err error) error {
 		strings.Contains(msg, "access is denied") ||
 		strings.Contains(msg, "permission denied") ||
 		strings.Contains(msg, "address in use") {
-		return fmt.Errorf("%w (hint: port 53 is busy or needs privileges — on Windows stop the Internet Connection Sharing service \"SharedAccess\" if it holds port 53; on Linux stop the systemd-resolved stub listener / dnsmasq, or pick a different listen port)", err)
+		return fmt.Errorf("%w (hint: port 53 is busy or needs privileges — another truedns/DNS instance may already be running; on Windows the Internet Connection Sharing service \"SharedAccess\" often holds port 53; on Linux stop the systemd-resolved stub listener / dnsmasq, or pick a different listen port)", err)
 	}
 	return err
 }
