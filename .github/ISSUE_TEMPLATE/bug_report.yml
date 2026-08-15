@@ -1,0 +1,33 @@
+name: Bug 报告
+description: 描述缺陷或异常行为（附 truedns logs 输出）
+title: "[bug] "
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: true-dns 版本
+      description: "truedns version 的输出"
+      placeholder: v1.0.0
+  - type: textarea
+    id: env
+    attributes:
+      label: 环境
+      description: 操作系统/架构、网络环境（国内直连/代理）、多网卡/VPN 等
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 包括 `truedns logs` 输出或运行窗口日志
+    validations:
+      required: true
