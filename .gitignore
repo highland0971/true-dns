@@ -1,11 +1,11 @@
 # Bundled Go toolchain (installed by the setup script in this repo clone)
 .toolchain/
 
-# Build output
+# Build output (root-anchored: cmd/truedns/ must stay tracked)
 /dist/
 *.exe
-truedns
-truedns.exe
+/truedns
+/truedns.exe
 
 # Local runtime artifacts
 truedns-state.json
