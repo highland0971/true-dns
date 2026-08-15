@@ -3,8 +3,9 @@
 // poisoned-domain answers.
 //
 // Latency budget: Filter dials candidates concurrently with a small worker
-// cap, so the worst-case added latency is
-// ceil(2 * max_ips / probeConcurrency) * timeout.
+// cap. The engine filters the A and AAAA families in series, so the
+// worst-case added latency is
+// 2 * ceil(max_ips / probeConcurrency) * timeout.
 package probe
 
 import (
@@ -35,9 +36,14 @@ type Result struct {
 }
 
 type cacheEntry struct {
-	res     Result
-	expires time.Time
+	res      Result
+	expires  time.Time
+	inserted time.Time
 }
+
+// cacheMaxEntries bounds the result cache; the oldest entry is evicted when
+// full (expired entries are swept first).
+const cacheMaxEntries = 4096
 
 type inflightEntry struct {
 	done chan struct{}
@@ -98,7 +104,13 @@ func (p *Prober) Check(ip net.IP) Result {
 	p.mu.Lock()
 	p.checks++
 	if p.ttl > 0 {
-		p.cache[key] = cacheEntry{res: res, expires: now.Add(p.ttl)}
+		if _, exists := p.cache[key]; !exists && len(p.cache) >= cacheMaxEntries {
+			p.sweepExpiredLocked(now)
+			if len(p.cache) >= cacheMaxEntries {
+				p.evictOldestLocked()
+			}
+		}
+		p.cache[key] = cacheEntry{res: res, expires: now.Add(p.ttl), inserted: now}
 	}
 	in.res = res
 	close(in.done)
@@ -180,6 +192,29 @@ func (p *Prober) Filter(ips []net.IP, mode Mode, max int) []net.IP {
 		out = append(out, ips[limit:]...)
 		return out
 	}
+}
+
+// sweepExpiredLocked removes entries past their TTL; caller holds the lock.
+func (p *Prober) sweepExpiredLocked(now time.Time) {
+	for k, e := range p.cache {
+		if !now.Before(e.expires) {
+			delete(p.cache, k)
+		}
+	}
+}
+
+// evictOldestLocked removes the least recently inserted entry; caller holds
+// the lock and the cache must be non-empty.
+func (p *Prober) evictOldestLocked() {
+	var oldestK string
+	var oldestT time.Time
+	first := true
+	for k, e := range p.cache {
+		if first || e.inserted.Before(oldestT) {
+			oldestK, oldestT, first = k, e.inserted, false
+		}
+	}
+	delete(p.cache, oldestK)
 }
 
 func itoa(v int) string {
