@@ -46,6 +46,7 @@ const usageText = `true-dns — 还原被污染域名的真实 IP, 并接管系�
   status    查看接管状态与代理运行状态
   flush     清空代理缓存 (经本地控制 API)
   logs      查看代理日志 (排查启动失败等)
+  tray      启动 Windows 系统托盘 GUI (仅 Windows)
   config    管理配置: config init | config show | config path
   version   打印版本信息
 
@@ -70,6 +71,7 @@ var commands = map[string]command{
 	"status":  {usage: "status [--config path]", run: cmdStatus},
 	"flush":   {usage: "flush [--config path]", run: cmdFlush},
 	"logs":    {usage: "logs [-n 50] [--log-file path]", run: cmdLogs},
+	"tray":    {usage: "tray [--config path] [--log-level lvl]", run: cmdTray},
 	"config":  {usage: "config <init|show|path> [--config path] [--force]", run: cmdConfig},
 	"version": {usage: "version", run: cmdVersion},
 }
