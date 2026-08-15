@@ -1,0 +1,28 @@
+# true-dns 本地联调配置: 沙箱内无法绑定 53/访问境外 DoH, 用可达的阿里 DoH 验证链路。
+listen = ["127.0.0.1:5353"]
+mode = "full"
+
+[domains]
+polluted = ["github.com", "github.io", "githubusercontent.com"]
+
+[upstreams]
+doh = ["https://dns.alidns.com/dns-query"]
+strategy = "race"
+timeout = "4s"
+fallback_to_doh = false
+system = ["223.5.5.5"]
+
+[cache]
+max_ttl = "10m"
+max_entries = 256
+
+[api]
+enabled = true
+listen = "127.0.0.1:15378"
+
+[ecs]
+strip = true
+
+[log]
+level = "debug"
+verbose_queries = true

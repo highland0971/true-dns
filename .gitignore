@@ -1,0 +1,18 @@
+# Bundled Go toolchain (installed by the setup script in this repo clone)
+.toolchain/
+
+# Build output
+/dist/
+*.exe
+truedns
+truedns.exe
+
+# Local runtime artifacts
+truedns-state.json
+truedns.log
+config.local.toml
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
