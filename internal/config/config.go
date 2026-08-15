@@ -151,8 +151,22 @@ func DefaultPath() string {
 	return filepath.Join(paths.StateDir(), "config.toml")
 }
 
+// Write persists a configuration to path (creating parent directories).
+func Write(path string, cfg *Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return toml.NewEncoder(f).Encode(cfg)
+}
+
 // Load reads and validates the configuration file at path (default location
-// when empty).
+// when empty). A missing file is an error — callers that want first-run
+// bootstrapping should use LoadOrBootstrap.
 func Load(path string) (*Config, error) {
 	cfg := Default()
 	if path == "" {
