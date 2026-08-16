@@ -16,5 +16,10 @@ func ElevateArgs(_ []string) (bool, error) { return false, nil }
 
 // ShellOpen opens path with xdg-open (best effort).
 func ShellOpen(path string) error {
-	return exec.Command("xdg-open", path).Start()
+	cmd := exec.Command("xdg-open", path)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }() // reap to avoid zombies
+	return nil
 }

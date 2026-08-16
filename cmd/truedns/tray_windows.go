@@ -5,6 +5,7 @@ package main
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -49,9 +50,15 @@ func cmdTray(fs *flag.FlagSet, args []string) error {
 	if err != nil {
 		cfg = config.Default() // tray works even before first run
 	} else if migrated, merr := config.EnsureSchema(cfgPath); merr != nil {
+		if errors.Is(merr, config.ErrSchemaNewer) {
+			return merr // newer schema: refuse to run with unknown fields
+		}
 		slog.Warn("config schema migration failed", "path", cfgPath, "err", merr)
 	} else if migrated {
 		slog.Info("config schema upgraded", "path", cfgPath, "version", config.CurrentSchemaVersion)
+		if nc, nerr := config.Load(cfgPath); nerr == nil {
+			cfg = nc
+		}
 	}
 	st := &trayState{
 		cfgPath:      cfgPath,

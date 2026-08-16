@@ -1,18 +1,26 @@
 package config
 
 import (
-	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 // CurrentSchemaVersion is the config file schema version this build writes
 // and understands.
 const CurrentSchemaVersion = 1
 
-var schemaVersionRe = regexp.MustCompile(`(?m)^\s*schema_version\s*=\s*(\d+)\s*$`)
+// ErrSchemaNewer reports a config file written by a newer build; callers must
+// treat it as fatal instead of downgrading silently.
+var ErrSchemaNewer = errors.New("config schema version is newer than this build")
+
+// schemaVersionLineRe matches a full line assigning schema_version (the
+// trailing-comment form is intentionally not recognized: it is migrated to
+// the canonical form instead).
+var schemaVersionLineRe = regexp.MustCompile(`^\s*schema_version\s*=\s*(\d+)\s*$`)
 
 // migration upgrades a config file from one schema version to the next.
 // Returning an error aborts the chain; conflicts must be reported clearly so
@@ -32,6 +40,8 @@ var migrations = []migration{
 // EnsureSchema upgrades the config file at path to the current schema
 // version. It returns true when a migration was applied. The file is only
 // touched when an upgrade is needed; parameters and comments are preserved.
+// Each migration step writes atomically, so a mid-chain failure never leaves
+// a corrupt file.
 func EnsureSchema(path string) (bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -39,7 +49,8 @@ func EnsureSchema(path string) (bool, error) {
 	}
 	v := detectSchemaVersion(data)
 	if v > CurrentSchemaVersion {
-		return false, fmt.Errorf("config %s uses schema_version %d, newer than this build supports (%d); upgrade true-dns first", path, v, CurrentSchemaVersion)
+		return false, fmt.Errorf("%w: %s uses schema_version %d, this build supports up to %d; upgrade true-dns first",
+			ErrSchemaNewer, path, v, CurrentSchemaVersion)
 	}
 	migrated := false
 	for v < CurrentSchemaVersion {
@@ -62,43 +73,75 @@ func EnsureSchema(path string) (bool, error) {
 	return migrated, nil
 }
 
+// detectSchemaVersion scans for a schema_version assignment line; files
+// without one (or with an unrecognized form) are treated as v0 legacy.
 func detectSchemaVersion(data []byte) int {
-	m := schemaVersionRe.FindSubmatch(data)
-	if m == nil {
-		return 0 // legacy files without the field
+	for _, line := range strings.Split(string(data), "\n") {
+		if m := schemaVersionLineRe.FindStringSubmatch(strings.TrimSuffix(line, "\r")); m != nil {
+			var v int
+			for _, c := range m[1] {
+				v = v*10 + int(c-'0')
+			}
+			return v
+		}
 	}
-	var v int
-	for _, c := range m[1] {
-		v = v*10 + int(c-'0')
-	}
-	return v
+	return 0
 }
 
 // migrateV0toV1 stamps the file with schema_version = 1, preserving the
-// original content (comments, ordering, parameters).
+// original content (comments, ordering, parameters). An explicit
+// "schema_version = 0" line is rewritten in place; otherwise the stamp is
+// prepended.
 func migrateV0toV1(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	if bytes.Contains(data, []byte("schema_version")) {
-		return fmt.Errorf("file already carries schema_version but was detected as v0")
+	lines := strings.Split(string(data), "\n")
+	replaced := false
+	for i, line := range lines {
+		trimmed := strings.TrimSuffix(line, "\r")
+		if m := schemaVersionLineRe.FindStringSubmatch(trimmed); m != nil && m[1] == "0" {
+			lines[i] = "schema_version = 1"
+			replaced = true
+			break
+		}
 	}
-	stamp := []byte("# schema_version: managed by true-dns, do not edit\nschema_version = 1\n\n")
-	out := append(stamp, data...)
+	var out []byte
+	if replaced {
+		out = []byte(strings.Join(lines, "\n"))
+	} else {
+		stamp := "# schema_version: managed by true-dns, do not edit\nschema_version = 1\n\n"
+		out = append([]byte(stamp), data...)
+	}
 	return atomicWrite(path, out)
 }
 
-// atomicWrite replaces path atomically, preserving permissions where the OS
-// reports them.
+// atomicWrite replaces path atomically via a per-process unique temp file in
+// the same directory (safe against concurrent migrations).
 func atomicWrite(path string, data []byte) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(filepath.Dir(path), ".config.tmp")
-	if err := os.WriteFile(tmp, data, info.Mode().Perm()); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return err
+	}
+	return os.Rename(tmpName, path)
 }

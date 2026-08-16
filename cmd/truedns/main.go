@@ -297,9 +297,15 @@ func loadConfig(path string, explicit bool) (*config.Config, error) {
 			return nil, err
 		}
 		if migrated, err := config.EnsureSchema(path); err != nil {
+			if errors.Is(err, config.ErrSchemaNewer) {
+				return nil, err // newer schema: refuse to run with unknown fields
+			}
 			slog.Warn("config schema migration failed", "path", path, "err", err)
 		} else if migrated {
 			slog.Info("config schema upgraded", "path", path, "version", config.CurrentSchemaVersion)
+			if nc, err := config.Load(path); err == nil {
+				cfg = nc // reload so field-level migrations take effect this run
+			}
 		}
 		return cfg, nil
 	}
