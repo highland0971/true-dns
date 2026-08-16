@@ -8,6 +8,8 @@ import (
 )
 
 // cmdTray is Windows-only; on other platforms it explains itself.
+func defaultCommandIsTray() bool { return false }
+
 func cmdTray(fs *flag.FlagSet, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
