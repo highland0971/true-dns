@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -170,6 +171,77 @@ func TestEnsureSchemaTrailingCommentForms(t *testing.T) {
 	}
 	if !strings.Contains(sd, "listen") {
 		t.Fatal("parameters lost")
+	}
+}
+
+func TestAtomicWriteRetryThenSucceed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := renameFile
+	defer func() { renameFile = orig }()
+	fails := 3
+	renameFile = func(from, to string) error {
+		if fails > 0 {
+			fails--
+			return syscall.EACCES
+		}
+		return os.Rename(from, to)
+	}
+	if err := atomicWrite(path, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != "new" {
+		t.Fatalf("content = %q", data)
+	}
+}
+
+func TestAtomicWriteFailSafeOnPersistentLock(t *testing.T) {
+	// Non-Windows: a persistently locked destination must NOT be rewritten
+	// in place; the original file stays intact and an error is reported.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := renameFile
+	defer func() { renameFile = orig }()
+	renameFile = func(from, to string) error { return syscall.EACCES } // always locked
+	if err := atomicWrite(path, []byte("new")); err == nil {
+		t.Fatal("expected error for persistent lock (fail-safe)")
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != "old" {
+		t.Fatalf("original content modified: %q", data)
+	}
+}
+
+func TestEnsureSchemaMigrationSelfHeals(t *testing.T) {
+	// Simulates the Windows editor-lock scenario: the first rename hits a
+	// locked destination, a retry within the same run succeeds.
+	path := writeTempConfig(t, legacyConfig)
+	orig := renameFile
+	defer func() { renameFile = orig }()
+	locked := true
+	renameFile = func(from, to string) error {
+		if locked {
+			locked = false
+			return syscall.EACCES
+		}
+		return os.Rename(from, to)
+	}
+	if _, err := EnsureSchema(path); err != nil {
+		t.Fatal(err) // falls back to in-place write; content must be intact
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("config corrupted: %v", err)
+	}
+	migrated, err := EnsureSchema(path)
+	if err != nil || migrated {
+		t.Fatalf("second run: migrated=%v err=%v", migrated, err)
 	}
 }
 

@@ -41,9 +41,14 @@ var migrations = []migration{
 // EnsureSchema upgrades the config file at path to the current schema
 // version. It returns true when a migration was applied. The file is only
 // touched when an upgrade is needed; parameters and comments are preserved.
-// Each migration step writes atomically, so a mid-chain failure never leaves
-// a corrupt file. A cross-process lock file serializes concurrent migrations
-// (e.g. run and tray started together).
+// A cross-process lock file serializes concurrent migrations (e.g. run and
+// tray started together).
+//
+// Durability: each migration step goes through atomicWrite — the normal path
+// is an atomic rename. On Windows only, a persistently locked destination
+// (editor/antivirus) falls back to an in-place rewrite with fsync, which has
+// a small crash window (documented there); on other platforms a failed
+// rename keeps the original file intact and reports the error.
 func EnsureSchema(path string) (bool, error) {
 	migrated := false
 	err := withConfigLock(path, func() error {
@@ -156,8 +161,17 @@ func withConfigLock(path string, fn func() error) error {
 	}
 }
 
-// atomicWrite replaces path atomically via a per-process unique temp file in
-// the same directory (safe against concurrent migrations).
+// renameFile is a variable so tests can inject transient/permanent failures.
+// Tests must not run in parallel while overriding it (no t.Parallel in this
+// package).
+var renameFile = os.Rename
+
+// atomicWrite replaces path with data: first via a per-process unique temp
+// file plus rename (atomic), retrying transient failures (Windows editors and
+// antivirus hold the destination briefly). When the rename keeps failing, the
+// platform hook inPlaceReplace decides the fallback: Windows rewrites in
+// place with fsync (small crash window, documented there); other platforms
+// keep the original file intact and return the error (fail-safe).
 func atomicWrite(path string, data []byte) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -168,19 +182,46 @@ func atomicWrite(path string, data []byte) error {
 		return err
 	}
 	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		os.Remove(tmpName)
+		cleanup()
 		return err
 	}
 	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
 		tmp.Close()
-		os.Remove(tmpName)
+		cleanup()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		cleanup()
 		return err
 	}
-	return os.Rename(tmpName, path)
+
+	if err := retryRename(tmpName, path); err == nil {
+		return nil
+	} else if werr := inPlaceReplace(path, data, info.Mode().Perm()); werr != nil {
+		cleanup()
+		return fmt.Errorf("replace config %s: %w (in-place fallback also failed: %v; close any editor holding the config open)", path, err, werr)
+	} else {
+		cleanup()
+		return nil
+	}
+}
+
+// retryRename renames tmp onto path with a short linear backoff to ride out
+// transient destination locks (150ms * attempt, ~2.25s total).
+func retryRename(tmp, path string) error {
+	var lastErr error
+	for i := 0; i < 6; i++ {
+		if i > 0 {
+			time.Sleep(time.Duration(i) * 150 * time.Millisecond)
+		}
+		if err := renameFile(tmp, path); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	return lastErr
 }
