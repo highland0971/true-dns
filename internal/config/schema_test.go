@@ -199,7 +199,9 @@ func TestAtomicWriteRetryThenSucceed(t *testing.T) {
 	}
 }
 
-func TestAtomicWriteInPlaceFallback(t *testing.T) {
+func TestAtomicWriteFailSafeOnPersistentLock(t *testing.T) {
+	// Non-Windows: a persistently locked destination must NOT be rewritten
+	// in place; the original file stays intact and an error is reported.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.toml")
 	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
@@ -208,18 +210,18 @@ func TestAtomicWriteInPlaceFallback(t *testing.T) {
 	orig := renameFile
 	defer func() { renameFile = orig }()
 	renameFile = func(from, to string) error { return syscall.EACCES } // always locked
-	if err := atomicWrite(path, []byte("new")); err != nil {
-		t.Fatal(err)
+	if err := atomicWrite(path, []byte("new")); err == nil {
+		t.Fatal("expected error for persistent lock (fail-safe)")
 	}
 	data, _ := os.ReadFile(path)
-	if string(data) != "new" {
-		t.Fatalf("fallback content = %q", data)
+	if string(data) != "old" {
+		t.Fatalf("original content modified: %q", data)
 	}
 }
 
 func TestEnsureSchemaMigrationSelfHeals(t *testing.T) {
-	// Simulates the Windows editor-lock scenario: first attempt hits a
-	// locked destination, second attempt (next run) succeeds.
+	// Simulates the Windows editor-lock scenario: the first rename hits a
+	// locked destination, a retry within the same run succeeds.
 	path := writeTempConfig(t, legacyConfig)
 	orig := renameFile
 	defer func() { renameFile = orig }()
