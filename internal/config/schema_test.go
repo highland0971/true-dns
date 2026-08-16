@@ -264,6 +264,28 @@ func TestIsPermissionErr(t *testing.T) {
 	}
 }
 
+func TestSchemaVersionOf(t *testing.T) {
+	// Legacy file → 0.
+	path := writeTempConfig(t, legacyConfig)
+	v, err := SchemaVersionOf(path)
+	if err != nil || v != 0 {
+		t.Fatalf("legacy: v=%d err=%v", v, err)
+	}
+	// Stamped file → 1.
+	if _, err := EnsureSchema(path); err != nil {
+		t.Fatal(err)
+	}
+	v, err = SchemaVersionOf(path)
+	if err != nil || v != 1 {
+		t.Fatalf("stamped: v=%d err=%v", v, err)
+	}
+	// Missing file → 0, no error (caller treats as will-be-created).
+	v, err = SchemaVersionOf(filepath.Join(t.TempDir(), "nope.toml"))
+	if err != nil || v != 0 {
+		t.Fatalf("missing: v=%d err=%v", v, err)
+	}
+}
+
 func TestDefaultCarriesSchemaVersion(t *testing.T) {
 	cfg := Default()
 	if cfg.SchemaVersion != CurrentSchemaVersion {

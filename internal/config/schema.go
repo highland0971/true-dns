@@ -106,6 +106,20 @@ func ensureSchemaLocked(path string) (bool, error) {
 	return migrated, nil
 }
 
+// SchemaVersionOf reports the schema version recorded in the config file at
+// path without modifying it (0 = legacy files without the field). A missing
+// file reports 0 so callers treat it as "will be created at current version".
+func SchemaVersionOf(path string) (int, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return detectSchemaVersion(data), nil
+}
+
 // detectSchemaVersion scans for a schema_version assignment line; files
 // without one (or with an unrecognized form) are treated as v0 legacy.
 func detectSchemaVersion(data []byte) int {

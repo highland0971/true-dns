@@ -46,41 +46,47 @@ func cmdTray(fs *flag.FlagSet, args []string) error {
 		return err
 	}
 	cfgPath := resolveConfigPath(*g.cfgPath)
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
-		cfg = config.Default() // tray works even before first run
-	} else if migrated, merr := config.EnsureSchema(cfgPath); merr != nil {
-		if errors.Is(merr, config.ErrSchemaNewer) {
-			return merr // newer schema: refuse to run with unknown fields
-		}
-		if config.IsPermissionErr(merr) && !platform.IsElevated() {
-			slog.Info("config migration deferred to the elevated instance", "path", cfgPath)
-		} else {
-			slog.Warn("config schema migration failed", "path", cfgPath, "err", merr)
-		}
-	} else if migrated {
-		slog.Info("config schema upgraded", "path", cfgPath, "version", config.CurrentSchemaVersion)
-		if nc, nerr := config.Load(cfgPath); nerr == nil {
-			cfg = nc
-		}
-	}
 	st := &trayState{
 		cfgPath:      cfgPath,
 		cfgPathGiven: *g.cfgPath != "",
-		cfg:          cfg,
+		cfg:          config.Default(), // tray works even before first run
 		client:       &http.Client{Timeout: 2 * time.Second},
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		slog.Debug("config not loaded, tray runs with defaults", "path", cfgPath, "err", err)
+	} else {
+		st.cfg = cfg
+		if migrated, merr := config.EnsureSchema(cfgPath); merr != nil {
+			if errors.Is(merr, config.ErrSchemaNewer) {
+				return merr // newer schema: refuse to run with unknown fields
+			}
+			if config.IsPermissionErr(merr) && !platform.IsElevated() {
+				slog.Info("config migration deferred to the elevated instance", "path", cfgPath)
+				st.pendingMigration = true
+			} else {
+				slog.Warn("config schema migration failed", "path", cfgPath, "err", merr)
+			}
+		} else if migrated {
+			slog.Info("config schema upgraded", "path", cfgPath, "version", config.CurrentSchemaVersion)
+			if nc, nerr := config.Load(cfgPath); nerr == nil {
+				st.cfg = nc
+			}
+		}
 	}
 	systray.Run(st.onReady, st.onExit)
 	return nil
 }
 
 type trayState struct {
-	cfgPath      string
-	cfgPathGiven bool // --config was passed explicitly
-	cfg          *config.Config
-	client       *http.Client
-	mStatus      *systray.MenuItem
-	titleMu      sync.Mutex // SetTitle is not internally synchronized by systray
+	cfgPath          string
+	cfgPathGiven     bool // --config was passed explicitly
+	cfg              *config.Config
+	client           *http.Client
+	mStatus          *systray.MenuItem
+	mMigrate         *systray.MenuItem
+	pendingMigration bool       // config needs a schema upgrade (needs elevation)
+	titleMu          sync.Mutex // SetTitle is not internally synchronized by systray
 }
 
 func (t *trayState) onReady() {
@@ -95,6 +101,9 @@ func (t *trayState) onReady() {
 	mStop := systray.AddMenuItem("停止代理", "优雅停止并恢复系统 DNS")
 	mFlush := systray.AddMenuItem("清空缓存", "经控制 API 清空解析缓存")
 	mRestore := systray.AddMenuItem("恢复系统 DNS", "紧急恢复 (需管理员权限)")
+	mMigrate := systray.AddMenuItem("升级配置文件", "配置文件 schema 需要升级 (需管理员权限)")
+	mMigrate.Disable()
+	t.mMigrate = mMigrate
 	systray.AddSeparator()
 	mOpenLog := systray.AddMenuItem("打开日志文件", "truedns.log")
 	mOpenCfg := systray.AddMenuItem("打开配置文件", "config.toml")
@@ -114,6 +123,8 @@ func (t *trayState) onReady() {
 				t.flushCache()
 			case <-mRestore.ClickedCh:
 				t.restoreDNS()
+			case <-mMigrate.ClickedCh:
+				t.migrateConfig()
 			case <-mOpenLog.ClickedCh:
 				t.openLog()
 			case <-mOpenCfg.ClickedCh:
@@ -173,6 +184,20 @@ func (t *trayState) refresh() {
 	} else {
 		line += " | DNS 未接管"
 	}
+	if v, err := config.SchemaVersionOf(t.cfgPath); err == nil && v < config.CurrentSchemaVersion {
+		t.pendingMigration = true
+	} else if err == nil {
+		t.pendingMigration = false
+	}
+	if t.pendingMigration {
+		line += " | 配置待升级"
+		tooltip += "\n配置需要升级: 点菜单「升级配置文件」(需管理员权限)"
+		if t.mMigrate != nil {
+			t.mMigrate.Enable()
+		}
+	} else if t.mMigrate != nil {
+		t.mMigrate.Disable()
+	}
 	t.setStatus(line)
 	systray.SetTooltip(tooltip)
 }
@@ -199,6 +224,24 @@ func (t *trayState) startProxy() {
 	if !platform.IsElevated() {
 		if _, err := platform.ElevateArgs(args); err != nil {
 			t.setStatus("启动失败: " + err.Error())
+		}
+		return
+	}
+	t.spawnHidden(args...)
+}
+
+// migrateConfig launches "truedns migrate" (self-elevating) to upgrade the
+// config schema; the next refresh clears the pending hint.
+func (t *trayState) migrateConfig() {
+	var args []string
+	if t.cfgPathGiven {
+		args = []string{"migrate", "--config", t.cfgPath}
+	} else {
+		args = []string{"migrate"}
+	}
+	if !platform.IsElevated() {
+		if _, err := platform.ElevateArgs(args); err != nil {
+			t.setStatus("升级失败: " + err.Error())
 		}
 		return
 	}

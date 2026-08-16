@@ -47,6 +47,7 @@ const usageText = `true-dns — 还原被污染域名的真实 IP, 并接管系�
   flush     清空代理缓存 (经本地控制 API)
   logs      查看代理日志 (排查启动失败等)
   tray      启动 Windows 系统托盘 GUI (仅 Windows)
+  migrate   升级配置文件 schema 版本 (自动提权; 托盘一键升级用)
   config    管理配置: config init | config show | config path
   version   打印版本信息
 
@@ -73,6 +74,7 @@ var commands = map[string]command{
 	"flush":   {usage: "flush [--config path]", run: cmdFlush},
 	"logs":    {usage: "logs [-n 50] [--log-file path]", run: cmdLogs},
 	"tray":    {usage: "tray [--config path] [--log-level lvl]", run: cmdTray},
+	"migrate": {usage: "migrate [--config path] [--no-elevate]", run: cmdMigrate},
 	"config":  {usage: "config <init|show|path> [--config path] [--force]", run: cmdConfig},
 	"version": {usage: "version", run: cmdVersion},
 }
@@ -680,6 +682,42 @@ func cmdFlush(fs *flag.FlagSet, args []string) error {
 		return fmt.Errorf("flush failed: API returned %s", resp.Status)
 	}
 	fmt.Println("cache flushed.")
+	return nil
+}
+
+// cmdMigrate upgrades the config file schema in place (self-elevating on
+// Windows), used by the tray's one-click upgrade entry.
+func cmdMigrate(fs *flag.FlagSet, args []string) error {
+	cfgPath := fs.String("config", "", "config file path (default: platform default)")
+	noElevate := fs.Bool("no-elevate", false, "do not attempt automatic UAC elevation")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	relaunched, err := maybeElevate(*noElevate)
+	if err != nil {
+		return err
+	}
+	if relaunched {
+		fmt.Println("UAC prompt shown — the elevated instance runs in a new console window; this one exits now.")
+		return nil
+	}
+	path := resolveConfigPath(*cfgPath)
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("config %s does not exist yet; it will be created at schema_version %d on first run\n", path, config.CurrentSchemaVersion)
+			return nil
+		}
+		return err
+	}
+	migrated, err := config.EnsureSchema(path)
+	if err != nil {
+		return err
+	}
+	if migrated {
+		fmt.Printf("config schema upgraded: %s (version %d)\n", path, config.CurrentSchemaVersion)
+	} else {
+		fmt.Printf("config schema already current: %s (version %d)\n", path, config.CurrentSchemaVersion)
+	}
 	return nil
 }
 
