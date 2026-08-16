@@ -56,6 +56,17 @@ func ElevateArgs(args []string) (bool, error) {
 // arguments through UAC.
 func Elevate() (bool, error) { return ElevateArgs(os.Args[1:]) }
 
+// ShellOpen opens path with the default Windows handler (handles spaces and
+// unicode correctly, unlike cmd /c start).
+func ShellOpen(path string) error {
+	verb, _ := windows.UTF16PtrFromString("open")
+	file, _ := windows.UTF16PtrFromString(path)
+	if err := windows.ShellExecute(0, verb, file, nil, nil, windows.SW_SHOWNORMAL); err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	return nil
+}
+
 func quoteArgs(args []string) string {
 	var b strings.Builder
 	for i, a := range args {

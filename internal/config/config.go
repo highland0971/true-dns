@@ -73,16 +73,19 @@ var DefaultPollutedDomains = []string{
 
 // Config is the root configuration structure, decoded from TOML.
 type Config struct {
-	Listen    []string       `toml:"listen"`
-	Mode      Mode           `toml:"mode"`
-	Domains   DomainsConfig  `toml:"domains"`
-	Upstreams UpstreamConfig `toml:"upstreams"`
-	Cache     CacheConfig    `toml:"cache"`
-	API       APIConfig      `toml:"api"`
-	ECS       ECSConfig      `toml:"ecs"`
-	Override  OverrideConfig `toml:"override"`
-	Probe     ProbeConfig    `toml:"probe"`
-	Log       LogConfig      `toml:"log"`
+	// SchemaVersion tracks the config file schema; managed automatically by
+	// config.EnsureSchema, do not edit by hand.
+	SchemaVersion int            `toml:"schema_version"`
+	Listen        []string       `toml:"listen"`
+	Mode          Mode           `toml:"mode"`
+	Domains       DomainsConfig  `toml:"domains"`
+	Upstreams     UpstreamConfig `toml:"upstreams"`
+	Cache         CacheConfig    `toml:"cache"`
+	API           APIConfig      `toml:"api"`
+	ECS           ECSConfig      `toml:"ecs"`
+	Override      OverrideConfig `toml:"override"`
+	Probe         ProbeConfig    `toml:"probe"`
+	Log           LogConfig      `toml:"log"`
 }
 
 // DomainsConfig holds the polluted-domain list.
@@ -178,8 +181,9 @@ type LogConfig struct {
 // Default returns a Config populated with safe defaults.
 func Default() *Config {
 	return &Config{
-		Listen: []string{"127.0.0.1:53", "[::1]:53"},
-		Mode:   ModeSplit,
+		SchemaVersion: CurrentSchemaVersion,
+		Listen:        []string{"127.0.0.1:53", "[::1]:53"},
+		Mode:          ModeSplit,
 		Domains: DomainsConfig{
 			Polluted: append([]string(nil), DefaultPollutedDomains...),
 		},

@@ -56,6 +56,7 @@ const usageText = `true-dns — 还原被污染域名的真实 IP, 并接管系�
   --log-level <lvl>  日志级别 debug|info|warn|error (默认 info)
 
 run/setup 在 Windows 上需要管理员权限 (会自动触发 UAC 提权, --no-elevate 可关闭)。
+Windows 下不带任何参数运行 (或双击图标) 将直接进入托盘模式 (tray), 使用默认配置路径。
 `
 
 type command struct {
@@ -107,6 +108,11 @@ func appendErrorLog(msg string) {
 
 func run(args []string) error {
 	if len(args) == 0 {
+		if defaultCommandIsTray() {
+			fs := flag.NewFlagSet("tray", flag.ContinueOnError)
+			fs.SetOutput(os.Stderr)
+			return cmdTray(fs, nil)
+		}
 		fmt.Fprint(os.Stdout, usageText)
 		return nil
 	}
@@ -286,7 +292,16 @@ func firstReachableAPI(cfg *config.Config, client *http.Client) (string, error) 
 // that does not exist is still a hard error.
 func loadConfig(path string, explicit bool) (*config.Config, error) {
 	if _, err := os.Stat(path); err == nil {
-		return config.Load(path)
+		cfg, err := config.Load(path)
+		if err != nil {
+			return nil, err
+		}
+		if migrated, err := config.EnsureSchema(path); err != nil {
+			slog.Warn("config schema migration failed", "path", path, "err", err)
+		} else if migrated {
+			slog.Info("config schema upgraded", "path", path, "version", config.CurrentSchemaVersion)
+		}
+		return cfg, nil
 	}
 	if explicit {
 		return nil, fmt.Errorf("config file not found: %s", path)

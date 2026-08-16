@@ -81,7 +81,8 @@ truedns restore    # 手动恢复系统 DNS (异常退出后使用)
 
 ### Windows 托盘 GUI
 
-运行 `truedns tray` 在系统托盘驻留一个控制图标（蓝底白点），无需常驻控制台窗口：
+运行 `truedns tray` 在系统托盘驻留一个控制图标（蓝底白点），无需常驻控制台窗口。
+**直接双击 exe（无参数运行）即自动进入托盘模式**，使用默认配置路径。
 
 - **启动代理**：以管理员权限拉起 `truedns run`（弹 UAC）
 - **停止代理**：经控制 API 优雅停止，系统 DNS 自动恢复
@@ -130,6 +131,7 @@ Windows 下 `--no-elevate` 关闭自动 UAC 提权。
 - `ecs`：`strip` 默认剥离客户端 ECS；`spoof` 可注入指定网段
 - `probe`：污染域名应答的 IP 可达性探测（TCP 443 测速，借鉴 GitHub520）——`drop` 剔除不可达 IP（每地址族前 `max_ips` 个，全部不可达时保留原答）/ `prefer` 可达优先排序，默认关闭；探测并发 4（A/AAAA 两族串行），最坏新增首包延迟 = `2*ceil(max_ips/4)*timeout`
 - `log`：`verbose_queries = true`（配合 `level = "debug"`）打印每次查询；`stats_interval` 控制周期统计心跳（默认 1 分钟，`"0s"` 关闭），运行日志同时写入 `<配置目录>/truedns.log`，可用 `truedns logs` 查看
+- 配置 `schema_version` 自动管理：每次启动检查并在不冲突时自动迁移旧配置（保留注释与已有参数），无需手工升级
 
 ## 控制 API（托盘 GUI 预留接口）
 

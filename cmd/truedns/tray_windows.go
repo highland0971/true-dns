@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -28,6 +29,10 @@ var trayIcon []byte
 
 const trayPollInterval = 3 * time.Second
 
+// defaultCommandIsTray makes a no-argument invocation (double-clicking the
+// exe) launch the tray with the default config path on Windows.
+func defaultCommandIsTray() bool { return true }
+
 // cmdTray runs the Windows system-tray GUI. The proxy itself runs as a
 // separate (elevated) process; the tray only controls it via the loopback
 // control API, so quitting the tray never affects resolution.
@@ -43,6 +48,10 @@ func cmdTray(fs *flag.FlagSet, args []string) error {
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		cfg = config.Default() // tray works even before first run
+	} else if migrated, merr := config.EnsureSchema(cfgPath); merr != nil {
+		slog.Warn("config schema migration failed", "path", cfgPath, "err", merr)
+	} else if migrated {
+		slog.Info("config schema upgraded", "path", cfgPath, "version", config.CurrentSchemaVersion)
 	}
 	st := &trayState{
 		cfgPath:      cfgPath,
@@ -266,5 +275,7 @@ func (t *trayState) openConfig() {
 }
 
 func (t *trayState) shellOpen(path string) {
-	_ = exec.Command("cmd", "/c", "start", "", path).Start()
+	if err := platform.ShellOpen(path); err != nil {
+		t.setStatus("打开失败: " + err.Error())
+	}
 }
