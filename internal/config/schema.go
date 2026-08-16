@@ -156,8 +156,14 @@ func withConfigLock(path string, fn func() error) error {
 	}
 }
 
-// atomicWrite replaces path atomically via a per-process unique temp file in
-// the same directory (safe against concurrent migrations).
+// renameFile is a variable so tests can inject transient/permanent failures.
+var renameFile = os.Rename
+
+// atomicWrite replaces path with data: first via a per-process unique temp
+// file plus rename (atomic), retrying transient failures (Windows editors and
+// antivirus hold the destination briefly). When the destination cannot be
+// replaced at all, it falls back to an in-place rewrite (non-atomic, last
+// resort) so the migration still lands once the holder releases write access.
 func atomicWrite(path string, data []byte) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -168,19 +174,46 @@ func atomicWrite(path string, data []byte) error {
 		return err
 	}
 	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		os.Remove(tmpName)
+		cleanup()
 		return err
 	}
 	if err := tmp.Chmod(info.Mode().Perm()); err != nil {
 		tmp.Close()
-		os.Remove(tmpName)
+		cleanup()
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		cleanup()
 		return err
 	}
-	return os.Rename(tmpName, path)
+
+	if err := retryRename(tmpName, path); err == nil {
+		return nil
+	} else if werr := os.WriteFile(path, data, info.Mode().Perm()); werr != nil {
+		cleanup()
+		return fmt.Errorf("replace config %s: %w (in-place fallback also failed: %v; close any editor holding the config open)", path, err, werr)
+	} else {
+		cleanup()
+		return nil
+	}
+}
+
+// retryRename renames tmp onto path with a short exponential backoff to ride
+// out transient destination locks.
+func retryRename(tmp, path string) error {
+	var lastErr error
+	for i := 0; i < 6; i++ {
+		if i > 0 {
+			time.Sleep(time.Duration(i) * 150 * time.Millisecond)
+		}
+		if err := renameFile(tmp, path); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+	return lastErr
 }

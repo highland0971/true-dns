@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 )
 
@@ -170,6 +171,75 @@ func TestEnsureSchemaTrailingCommentForms(t *testing.T) {
 	}
 	if !strings.Contains(sd, "listen") {
 		t.Fatal("parameters lost")
+	}
+}
+
+func TestAtomicWriteRetryThenSucceed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := renameFile
+	defer func() { renameFile = orig }()
+	fails := 3
+	renameFile = func(from, to string) error {
+		if fails > 0 {
+			fails--
+			return syscall.EACCES
+		}
+		return os.Rename(from, to)
+	}
+	if err := atomicWrite(path, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != "new" {
+		t.Fatalf("content = %q", data)
+	}
+}
+
+func TestAtomicWriteInPlaceFallback(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := renameFile
+	defer func() { renameFile = orig }()
+	renameFile = func(from, to string) error { return syscall.EACCES } // always locked
+	if err := atomicWrite(path, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != "new" {
+		t.Fatalf("fallback content = %q", data)
+	}
+}
+
+func TestEnsureSchemaMigrationSelfHeals(t *testing.T) {
+	// Simulates the Windows editor-lock scenario: first attempt hits a
+	// locked destination, second attempt (next run) succeeds.
+	path := writeTempConfig(t, legacyConfig)
+	orig := renameFile
+	defer func() { renameFile = orig }()
+	locked := true
+	renameFile = func(from, to string) error {
+		if locked {
+			locked = false
+			return syscall.EACCES
+		}
+		return os.Rename(from, to)
+	}
+	if _, err := EnsureSchema(path); err != nil {
+		t.Fatal(err) // falls back to in-place write; content must be intact
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("config corrupted: %v", err)
+	}
+	migrated, err := EnsureSchema(path)
+	if err != nil || migrated {
+		t.Fatalf("second run: migrated=%v err=%v", migrated, err)
 	}
 }
 
