@@ -279,10 +279,10 @@ func TestSchemaVersionOf(t *testing.T) {
 	if err != nil || v != 1 {
 		t.Fatalf("stamped: v=%d err=%v", v, err)
 	}
-	// Missing file → 0, no error (caller treats as will-be-created).
-	v, err = SchemaVersionOf(filepath.Join(t.TempDir(), "nope.toml"))
-	if err != nil || v != 0 {
-		t.Fatalf("missing: v=%d err=%v", v, err)
+	// Missing file → ErrNotExist so callers can distinguish it from v0.
+	_, err = SchemaVersionOf(filepath.Join(t.TempDir(), "nope.toml"))
+	if !os.IsNotExist(err) {
+		t.Fatalf("missing: err=%v, want ErrNotExist", err)
 	}
 }
 

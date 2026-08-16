@@ -108,13 +108,12 @@ func ensureSchemaLocked(path string) (bool, error) {
 
 // SchemaVersionOf reports the schema version recorded in the config file at
 // path without modifying it (0 = legacy files without the field). A missing
-// file reports 0 so callers treat it as "will be created at current version".
+// file returns os.ErrNotExist so callers can distinguish "not created yet"
+// (nothing to migrate — the first run writes the current version) from a
+// legacy v0 file.
 func SchemaVersionOf(path string) (int, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
-		}
 		return 0, err
 	}
 	return detectSchemaVersion(data), nil

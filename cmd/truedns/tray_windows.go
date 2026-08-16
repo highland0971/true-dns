@@ -184,10 +184,11 @@ func (t *trayState) refresh() {
 	} else {
 		line += " | DNS 未接管"
 	}
-	if v, err := config.SchemaVersionOf(t.cfgPath); err == nil && v < config.CurrentSchemaVersion {
-		t.pendingMigration = true
-	} else if err == nil {
-		t.pendingMigration = false
+	if v, err := config.SchemaVersionOf(t.cfgPath); err == nil {
+		// A missing file means "not created yet" — the first run writes the
+		// current version, so nothing to migrate (and the deferred flag set
+		// at startup is left untouched).
+		t.pendingMigration = v < config.CurrentSchemaVersion
 	}
 	if t.pendingMigration {
 		line += " | 配置待升级"
