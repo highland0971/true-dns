@@ -5,20 +5,7 @@ package config
 import (
 	"fmt"
 	"os"
-	"os/exec"
 )
-
-// ensureConfigACL grants the built-in Users group modify rights on the config
-// file so non-elevated processes (tray, serve) can migrate it themselves.
-// The takeover state file is intentionally not touched. Best effort: failures
-// are non-fatal because the elevated instance can always migrate.
-func ensureConfigACL(path string) error {
-	out, err := exec.Command("icacls", path, "/grant", "*S-1-5-32-545:M").CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("icacls %s: %v: %s", path, err, out)
-	}
-	return nil
-}
 
 // inPlaceReplace rewrites the destination in place with fsync. It exists for
 // Windows, where an editor/antivirus holding the destination makes rename

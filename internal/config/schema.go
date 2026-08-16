@@ -103,12 +103,6 @@ func ensureSchemaLocked(path string) (bool, error) {
 		migrated = true
 		v++
 	}
-	if migrated {
-		// Windows: hand the config file to the built-in Users group so
-		// non-elevated processes (tray/serve) can migrate it themselves next
-		// time. Best effort — the elevated instance can always migrate.
-		_ = ensureConfigACL(path)
-	}
 	return migrated, nil
 }
 
