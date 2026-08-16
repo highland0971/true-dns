@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,6 +18,20 @@ const CurrentSchemaVersion = 1
 // ErrSchemaNewer reports a config file written by a newer build; callers must
 // treat it as fatal instead of downgrading silently.
 var ErrSchemaNewer = errors.New("config schema version is newer than this build")
+
+// IsPermissionErr reports whether err is (or wraps) a permission denial —
+// e.g. a non-elevated process trying to migrate a config file owned by the
+// elevated instance on Windows. Callers downgrade such failures to a
+// delegation notice instead of warning spam.
+func IsPermissionErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	// errors.Is unwraps generic fmt.Errorf("%w") chains, which os.IsPermission
+	// does not; the string check additionally covers Windows rename errors
+	// that surface as bare access-denied messages.
+	return errors.Is(err, fs.ErrPermission) || strings.Contains(err.Error(), "Access is denied")
+}
 
 // schemaVersionLineRe matches a line assigning schema_version, optionally
 // followed by a trailing comment. The comment is dropped when a version-0
@@ -87,6 +102,12 @@ func ensureSchemaLocked(path string) (bool, error) {
 		}
 		migrated = true
 		v++
+	}
+	if migrated {
+		// Windows: hand the config file to the built-in Users group so
+		// non-elevated processes (tray/serve) can migrate it themselves next
+		// time. Best effort — the elevated instance can always migrate.
+		_ = ensureConfigACL(path)
 	}
 	return migrated, nil
 }

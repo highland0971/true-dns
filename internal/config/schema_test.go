@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -242,6 +243,24 @@ func TestEnsureSchemaMigrationSelfHeals(t *testing.T) {
 	migrated, err := EnsureSchema(path)
 	if err != nil || migrated {
 		t.Fatalf("second run: migrated=%v err=%v", migrated, err)
+	}
+}
+
+func TestIsPermissionErr(t *testing.T) {
+	if IsPermissionErr(nil) {
+		t.Fatal("nil is not a permission error")
+	}
+	if !IsPermissionErr(syscall.EACCES) {
+		t.Fatal("EACCES should be a permission error")
+	}
+	if !IsPermissionErr(fmt.Errorf("wrapped: %w", syscall.EACCES)) {
+		t.Fatal("wrapped EACCES should be detected")
+	}
+	if !IsPermissionErr(errors.New("rename x y: Access is denied.")) {
+		t.Fatal("Windows access-denied wording should be detected")
+	}
+	if IsPermissionErr(errors.New("some other error")) {
+		t.Fatal("unrelated error misdetected")
 	}
 }
 

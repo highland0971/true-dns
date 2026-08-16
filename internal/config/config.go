@@ -242,7 +242,13 @@ func Write(path string, cfg *Config) error {
 		return err
 	}
 	defer f.Close()
-	return toml.NewEncoder(f).Encode(cfg)
+	if err := toml.NewEncoder(f).Encode(cfg); err != nil {
+		return err
+	}
+	// Windows: make the fresh config writable by the built-in Users group so
+	// non-elevated processes can migrate it later (best effort).
+	_ = ensureConfigACL(path)
+	return nil
 }
 
 // Load reads and validates the configuration file at path (default location
