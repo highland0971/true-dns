@@ -53,7 +53,11 @@ func cmdTray(fs *flag.FlagSet, args []string) error {
 		if errors.Is(merr, config.ErrSchemaNewer) {
 			return merr // newer schema: refuse to run with unknown fields
 		}
-		slog.Warn("config schema migration failed", "path", cfgPath, "err", merr)
+		if config.IsPermissionErr(merr) && !platform.IsElevated() {
+			slog.Info("config migration deferred to the elevated instance", "path", cfgPath)
+		} else {
+			slog.Warn("config schema migration failed", "path", cfgPath, "err", merr)
+		}
 	} else if migrated {
 		slog.Info("config schema upgraded", "path", cfgPath, "version", config.CurrentSchemaVersion)
 		if nc, nerr := config.Load(cfgPath); nerr == nil {

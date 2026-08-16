@@ -300,7 +300,13 @@ func loadConfig(path string, explicit bool) (*config.Config, error) {
 			if errors.Is(err, config.ErrSchemaNewer) {
 				return nil, err // newer schema: refuse to run with unknown fields
 			}
-			slog.Warn("config schema migration failed", "path", path, "err", err)
+			if config.IsPermissionErr(err) && runtime.GOOS == "windows" && !platform.IsElevated() {
+				// Non-elevated Windows process: the elevated run instance
+				// owns the config directory and will migrate on its next run.
+				slog.Info("config migration deferred to the elevated instance", "path", path)
+			} else {
+				slog.Warn("config schema migration failed", "path", path, "err", err)
+			}
 		} else if migrated {
 			slog.Info("config schema upgraded", "path", path, "version", config.CurrentSchemaVersion)
 			if nc, err := config.Load(path); err == nil {
