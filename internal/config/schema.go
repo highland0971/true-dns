@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // CurrentSchemaVersion is the config file schema version this build writes
@@ -17,10 +18,10 @@ const CurrentSchemaVersion = 1
 // treat it as fatal instead of downgrading silently.
 var ErrSchemaNewer = errors.New("config schema version is newer than this build")
 
-// schemaVersionLineRe matches a full line assigning schema_version (the
-// trailing-comment form is intentionally not recognized: it is migrated to
-// the canonical form instead).
-var schemaVersionLineRe = regexp.MustCompile(`^\s*schema_version\s*=\s*(\d+)\s*$`)
+// schemaVersionLineRe matches a line assigning schema_version, optionally
+// followed by a trailing comment. The comment is dropped when a version-0
+// line is rewritten to the canonical form.
+var schemaVersionLineRe = regexp.MustCompile(`^\s*schema_version\s*=\s*(\d+)\s*(?:#.*)?$`)
 
 // migration upgrades a config file from one schema version to the next.
 // Returning an error aborts the chain; conflicts must be reported clearly so
@@ -41,8 +42,20 @@ var migrations = []migration{
 // version. It returns true when a migration was applied. The file is only
 // touched when an upgrade is needed; parameters and comments are preserved.
 // Each migration step writes atomically, so a mid-chain failure never leaves
-// a corrupt file.
+// a corrupt file. A cross-process lock file serializes concurrent migrations
+// (e.g. run and tray started together).
 func EnsureSchema(path string) (bool, error) {
+	migrated := false
+	err := withConfigLock(path, func() error {
+		m, err := ensureSchemaLocked(path)
+		migrated = m
+		return err
+	})
+	return migrated, err
+}
+
+// ensureSchemaLocked is the lock-free body of EnsureSchema.
+func ensureSchemaLocked(path string) (bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false, err
@@ -115,6 +128,32 @@ func migrateV0toV1(path string) error {
 		out = append([]byte(stamp), data...)
 	}
 	return atomicWrite(path, out)
+}
+
+// withConfigLock serializes config migration across processes using a
+// sidecar lock file with stale-lock recovery.
+func withConfigLock(path string, fn func() error) error {
+	lockPath := path + ".lock"
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			defer func() { f.Close(); os.Remove(lockPath) }()
+			return fn()
+		}
+		if os.IsExist(err) {
+			if info, serr := os.Stat(lockPath); serr == nil && time.Since(info.ModTime()) > 10*time.Second {
+				os.Remove(lockPath) // stale lock from a crashed process
+				continue
+			}
+			if time.Now().After(deadline) {
+				return fmt.Errorf("config lock timeout waiting on %s", lockPath)
+			}
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		return err
+	}
 }
 
 // atomicWrite replaces path atomically via a per-process unique temp file in

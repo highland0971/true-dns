@@ -145,6 +145,34 @@ func TestConcurrentEnsureSchemaIdempotent(t *testing.T) {
 	}
 }
 
+func TestEnsureSchemaTrailingCommentForms(t *testing.T) {
+	// Current version with a trailing comment: detected as current, no
+	// rewrite needed.
+	path := writeTempConfig(t, "schema_version = 1 # note\nlisten = [\"127.0.0.1:53\"]\n")
+	migrated, err := EnsureSchema(path)
+	if err != nil || migrated {
+		t.Fatalf("v1 trailing comment should be no-op: migrated=%v err=%v", migrated, err)
+	}
+	// Version 0 with a trailing comment: rewritten in place, no duplicate
+	// key, parameters preserved, file still loadable.
+	path = writeTempConfig(t, "schema_version = 0 # note\nlisten = [\"127.0.0.1:53\"]\n")
+	migrated, err = EnsureSchema(path)
+	if err != nil || !migrated {
+		t.Fatalf("v0 trailing comment: migrated=%v err=%v", migrated, err)
+	}
+	data, _ := os.ReadFile(path)
+	sd := string(data)
+	if strings.Count(sd, "schema_version") != 1 || !strings.Contains(sd, "schema_version = 1") {
+		t.Fatalf("duplicate or missing key:\n%s", sd)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("config not loadable after migration: %v", err)
+	}
+	if !strings.Contains(sd, "listen") {
+		t.Fatal("parameters lost")
+	}
+}
+
 func TestDefaultCarriesSchemaVersion(t *testing.T) {
 	cfg := Default()
 	if cfg.SchemaVersion != CurrentSchemaVersion {
